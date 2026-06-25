@@ -1,0 +1,11 @@
+yamlservices:
+  - type: web
+    name: meal-tracker-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn main:app
+    envVars:
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
