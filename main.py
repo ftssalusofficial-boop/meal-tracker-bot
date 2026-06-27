@@ -3,13 +3,25 @@ import os
 import json
 import requests
 from google import genai
+import firebase_admin
+from firebase_admin import credentials, firestore
+from datetime import datetime, timezone, timedelta
 
 app = Flask(__name__)
 
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+FIREBASE_CREDENTIALS = os.environ.get("FIREBASE_CREDENTIALS")
+
+# Firebase初期化
+cred_dict = json.loads(FIREBASE_CREDENTIALS)
+cred = credentials.Certificate(cred_dict)
+firebase_admin.initialize_app(cred)
+db = firestore.client()
 
 client = genai.Client(api_key=GEMINI_API_KEY)
+
+JST = timezone(timedelta(hours=9))
 
 def reply_message(reply_token, text):
     headers = {
@@ -30,6 +42,32 @@ def analyze_food(text):
     )
     return response.text
 
+def save_meal(user_id, meal_data):
+    now = datetime.now(JST)
+    date_str = now.strftime("%Y-%m-%d")
+    doc_ref = db.collection("meals").document(user_id).collection(date_str).document()
+    doc_ref.set({
+        "dish": meal_data["dish"],
+        "calories": meal_data["calories"],
+        "protein": meal_data["protein"],
+        "fat": meal_data["fat"],
+        "carbs": meal_data["carbs"],
+        "timestamp": now.isoformat()
+    })
+
+def get_daily_total(user_id):
+    now = datetime.now(JST)
+    date_str = now.strftime("%Y-%m-%d")
+    docs = db.collection("meals").document(user_id).collection(date_str).stream()
+    total = {"calories": 0, "protein": 0, "fat": 0, "carbs": 0}
+    for doc in docs:
+        d = doc.to_dict()
+        total["calories"] += d.get("calories", 0)
+        total["protein"] += d.get("protein", 0)
+        total["fat"] += d.get("fat", 0)
+        total["carbs"] += d.get("carbs", 0)
+    return total
+
 @app.route("/callback", methods=["POST"])
 def callback():
     body = request.get_json()
@@ -37,16 +75,22 @@ def callback():
         if event["type"] != "message":
             continue
         reply_token = event["replyToken"]
+        user_id = event["source"]["userId"]
         msg_type = event["message"]["type"]
         if msg_type == "text":
             user_text = event["message"]["text"]
-            result = analyze_food(user_text)
-            try:
-                clean = result.strip().replace("```json", "").replace("```", "").strip()
-                data = json.loads(clean)
-                reply = f"🍽 {data['dish']}\n\nカロリー：{data['calories']} kcal\nタンパク質：{data['protein']} g\n脂質：{data['fat']} g\n炭水化物：{data['carbs']} g"
-            except:
-                reply = "食事を認識できませんでした。料理名を入力してみてください。"
+            if user_text == "今日の合計":
+                total = get_daily_total(user_id)
+                reply = f"📊 今日の合計\n\nカロリー：{total['calories']} kcal\nタンパク質：{total['protein']} g\n脂質：{total['fat']} g\n炭水化物：{total['carbs']} g"
+            else:
+                result = analyze_food(user_text)
+                try:
+                    clean = result.strip().replace("```json", "").replace("```", "").strip()
+                    meal_data = json.loads(clean)
+                    save_meal(user_id, meal_data)
+                    reply = f"🍽 {meal_data['dish']}\n\nカロリー：{meal_data['calories']} kcal\nタンパク質：{meal_data['protein']} g\n脂質：{meal_data['fat']} g\n炭水化物：{meal_data['carbs']} g\n\n✅ 記録しました！"
+                except:
+                    reply = "食事を認識できませんでした。料理名を入力してみてください。"
             reply_message(reply_token, reply)
         else:
             reply_message(reply_token, "テキストで料理名を送ってください！")
