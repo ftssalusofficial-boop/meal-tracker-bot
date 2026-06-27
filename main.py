@@ -3,9 +3,11 @@ import os
 import json
 import requests
 from google import genai
+from google.genai import types
 import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime, timezone, timedelta
+import base64
 
 app = Flask(__name__)
 
@@ -33,11 +35,28 @@ def reply_message(reply_token, text):
     }
     requests.post("https://api.line.me/v2/bot/message/reply", headers=headers, json=data)
 
-def analyze_food(text):
+def get_line_image(message_id):
+    url = f"https://api-data.line.me/v2/bot/message/{message_id}/content"
+    headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
+    response = requests.get(url, headers=headers)
+    return response.content
+
+def analyze_food_text(text):
     prompt = f"「{text}」の栄養素を教えてください。カロリー、タンパク質、脂質、炭水化物をJSON形式のみで返してください。他の文章は不要です。例：{{\"dish\":\"料理名\",\"calories\":500,\"protein\":20,\"fat\":15,\"carbs\":60}}"
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=prompt
+    )
+    return response.text
+
+def analyze_food_image(image_bytes):
+    prompt = "この食事の写真を見て、料理名とカロリー、タンパク質、脂質、炭水化物をJSON形式のみで返してください。他の文章は不要です。例：{\"dish\":\"料理名\",\"calories\":500,\"protein\":20,\"fat\":15,\"carbs\":60}"
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[
+            types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+            prompt
+        ]
     )
     return response.text
 
@@ -87,7 +106,21 @@ def callback():
         reply_token = event["replyToken"]
         user_id = event["source"]["userId"]
         msg_type = event["message"]["type"]
-        if msg_type == "text":
+
+        if msg_type == "image":
+            try:
+                message_id = event["message"]["id"]
+                image_bytes = get_line_image(message_id)
+                result = analyze_food_image(image_bytes)
+                clean = result.strip().replace("```json", "").replace("```", "").strip()
+                meal_data = json.loads(clean)
+                save_meal(user_id, meal_data)
+                reply = f"📸 {meal_data['dish']}\n\nカロリー：{meal_data['calories']} kcal\nタンパク質：{meal_data['protein']} g\n脂質：{meal_data['fat']} g\n炭水化物：{meal_data['carbs']} g\n\n✅ 記録しました！"
+            except:
+                reply = "写真から料理を認識できませんでした。もう一度試してください。"
+            reply_message(reply_token, reply)
+
+        elif msg_type == "text":
             user_text = event["message"]["text"]
             if user_text == "今日の合計":
                 total = get_daily_total(user_id)
@@ -108,7 +141,7 @@ def callback():
                 except:
                     reply = "目標設定の形式が正しくありません。\n例：目標設定 2000"
             else:
-                result = analyze_food(user_text)
+                result = analyze_food_text(user_text)
                 try:
                     clean = result.strip().replace("```json", "").replace("```", "").strip()
                     meal_data = json.loads(clean)
@@ -117,8 +150,9 @@ def callback():
                 except:
                     reply = "食事を認識できませんでした。料理名を入力してみてください。"
             reply_message(reply_token, reply)
+
         else:
-            reply_message(reply_token, "テキストで料理名を送ってください！")
+            reply_message(reply_token, "料理名か食事の写真を送ってください！")
     return "OK"
 
 if __name__ == "__main__":
