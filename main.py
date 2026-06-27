@@ -7,7 +7,6 @@ from google.genai import types
 import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime, timezone, timedelta
-import base64
 
 app = Flask(__name__)
 
@@ -86,16 +85,42 @@ def get_daily_total(user_id):
         total["carbs"] += d.get("carbs", 0)
     return total
 
-def set_goal(user_id, calories):
-    db.collection("goals").document(user_id).set({
-        "calories": calories
-    })
+def set_goal(user_id, calories, protein=None, fat=None, carbs=None):
+    data = {"calories": calories}
+    if protein: data["protein"] = protein
+    if fat: data["fat"] = fat
+    if carbs: data["carbs"] = carbs
+    db.collection("goals").document(user_id).set(data)
 
 def get_goal(user_id):
     doc = db.collection("goals").document(user_id).get()
     if doc.exists:
         return doc.to_dict()
     return None
+
+def format_total_reply(total, goal):
+    reply = f"📊 今日の合計\n\nカロリー：{total['calories']} kcal\nタンパク質：{total['protein']} g\n脂質：{total['fat']} g\n炭水化物：{total['carbs']} g"
+    if goal:
+        reply += "\n\n🎯 目標との比較"
+        cal_remaining = goal["calories"] - total["calories"]
+        cal_percent = int(total["calories"] / goal["calories"] * 100)
+        if cal_remaining > 0:
+            reply += f"\nカロリー：残り{cal_remaining} kcal（{cal_percent}%達成）"
+        else:
+            reply += f"\nカロリー：⚠️ 目標超過！"
+        if "protein" in goal:
+            p_remaining = goal["protein"] - total["protein"]
+            p_percent = int(total["protein"] / goal["protein"] * 100)
+            reply += f"\nタンパク質：残り{p_remaining} g（{p_percent}%達成）"
+        if "fat" in goal:
+            f_remaining = goal["fat"] - total["fat"]
+            f_percent = int(total["fat"] / goal["fat"] * 100)
+            reply += f"\n脂質：残り{f_remaining} g（{f_percent}%達成）"
+        if "carbs" in goal:
+            c_remaining = goal["carbs"] - total["carbs"]
+            c_percent = int(total["carbs"] / goal["carbs"] * 100)
+            reply += f"\n炭水化物：残り{c_remaining} g（{c_percent}%達成）"
+    return reply
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -125,21 +150,21 @@ def callback():
             if user_text == "今日の合計":
                 total = get_daily_total(user_id)
                 goal = get_goal(user_id)
-                reply = f"📊 今日の合計\n\nカロリー：{total['calories']} kcal\nタンパク質：{total['protein']} g\n脂質：{total['fat']} g\n炭水化物：{total['carbs']} g"
-                if goal:
-                    remaining = goal["calories"] - total["calories"]
-                    percent = int(total["calories"] / goal["calories"] * 100)
-                    if remaining > 0:
-                        reply += f"\n\n🎯 目標：{goal['calories']} kcal\n残り：{remaining} kcal（{percent}%達成）"
-                    else:
-                        reply += f"\n\n🎯 目標：{goal['calories']} kcal\n⚠️ 目標カロリーを超えました！"
+                reply = format_total_reply(total, goal)
             elif user_text.startswith("目標設定"):
                 try:
-                    calories = int(user_text.replace("目標設定", "").strip())
-                    set_goal(user_id, calories)
-                    reply = f"✅ 目標カロリーを {calories} kcal に設定しました！"
+                    parts = user_text.replace("目標設定", "").strip().split()
+                    calories = int(parts[0])
+                    protein = int(parts[1]) if len(parts) > 1 else None
+                    fat = int(parts[2]) if len(parts) > 2 else None
+                    carbs = int(parts[3]) if len(parts) > 3 else None
+                    set_goal(user_id, calories, protein, fat, carbs)
+                    reply = f"✅ 目標を設定しました！\nカロリー：{calories} kcal"
+                    if protein: reply += f"\nタンパク質：{protein} g"
+                    if fat: reply += f"\n脂質：{fat} g"
+                    if carbs: reply += f"\n炭水化物：{carbs} g"
                 except:
-                    reply = "目標設定の形式が正しくありません。\n例：目標設定 2000"
+                    reply = "目標設定の形式が正しくありません。\n例：目標設定 2000 150 50 250\n（カロリー タンパク質 脂質 炭水化物）"
             else:
                 result = analyze_food_text(user_text)
                 try:
