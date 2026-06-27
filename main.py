@@ -13,7 +13,6 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 FIREBASE_CREDENTIALS = os.environ.get("FIREBASE_CREDENTIALS")
 
-# Firebase初期化
 cred_dict = json.loads(FIREBASE_CREDENTIALS)
 cred = credentials.Certificate(cred_dict)
 firebase_admin.initialize_app(cred)
@@ -68,6 +67,17 @@ def get_daily_total(user_id):
         total["carbs"] += d.get("carbs", 0)
     return total
 
+def set_goal(user_id, calories):
+    db.collection("goals").document(user_id).set({
+        "calories": calories
+    })
+
+def get_goal(user_id):
+    doc = db.collection("goals").document(user_id).get()
+    if doc.exists:
+        return doc.to_dict()
+    return None
+
 @app.route("/callback", methods=["POST"])
 def callback():
     body = request.get_json()
@@ -81,7 +91,22 @@ def callback():
             user_text = event["message"]["text"]
             if user_text == "今日の合計":
                 total = get_daily_total(user_id)
+                goal = get_goal(user_id)
                 reply = f"📊 今日の合計\n\nカロリー：{total['calories']} kcal\nタンパク質：{total['protein']} g\n脂質：{total['fat']} g\n炭水化物：{total['carbs']} g"
+                if goal:
+                    remaining = goal["calories"] - total["calories"]
+                    percent = int(total["calories"] / goal["calories"] * 100)
+                    if remaining > 0:
+                        reply += f"\n\n🎯 目標：{goal['calories']} kcal\n残り：{remaining} kcal（{percent}%達成）"
+                    else:
+                        reply += f"\n\n🎯 目標：{goal['calories']} kcal\n⚠️ 目標カロリーを超えました！"
+            elif user_text.startswith("目標設定"):
+                try:
+                    calories = int(user_text.replace("目標設定", "").strip())
+                    set_goal(user_id, calories)
+                    reply = f"✅ 目標カロリーを {calories} kcal に設定しました！"
+                except:
+                    reply = "目標設定の形式が正しくありません。\n例：目標設定 2000"
             else:
                 result = analyze_food(user_text)
                 try:
