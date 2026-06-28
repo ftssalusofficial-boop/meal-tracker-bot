@@ -64,16 +64,18 @@ def gemini_generate(prompt, image_bytes=None):
             time.sleep(2)
 
 def classify_message(text):
-    prompt = f"""以下のメッセージが「食事」「運動」「合計確認」「目標設定」「記録一覧」「削除」「その他」のどれかを判定してください。
+    prompt = f"""以下のメッセージが「食事」「運動」「合計確認」「目標設定」「記録一覧」「削除リスト」「削除番号」「やり直し」「その他」のどれかを判定してください。
 JSONのみで返してください。例：{{"type":"食事"}}
 
 判定ルール：
 - 料理名、食べ物、飲み物 → 食事
 - 歩いた、走った、泳いだ、歩数、ジョギング、ウォーキング、筋トレ、スクワット、ベンチプレス、腕立て、腹筋、種目名、運動、トレーニング → 運動
-- 今日の合計、合計、今日 → 合計確認
+- 今日の合計、合計 → 合計確認
 - 目標設定 → 目標設定
 - 今日の記録、記録一覧、記録を見る → 記録一覧
-- 削除、やり直し、取り消し、消して、間違えた → 削除
+- 削除、削除したい、消したい → 削除リスト
+- 「削除 1」「削除 2」など削除と数字 → 削除番号
+- やり直し、取り消し、間違えた → やり直し
 - それ以外 → その他
 
 メッセージ：「{text}」"""
@@ -117,6 +119,49 @@ def save_exercise(user_id, exercise_data):
         "timestamp": now.isoformat()
     })
 
+def get_today_records_with_ids(user_id):
+    now = datetime.now(JST)
+    date_str = now.strftime("%Y-%m-%d")
+    records = []
+
+    meals = db.collection("meals").document(user_id).collection(date_str).order_by("timestamp").stream()
+    for doc in meals:
+        d = doc.to_dict()
+        records.append({"type": "食事", "id": doc.id, "name": d["dish"], "calories": d["calories"], "timestamp": d["timestamp"]})
+
+    exercises = db.collection("exercises").document(user_id).collection(date_str).order_by("timestamp").stream()
+    for doc in exercises:
+        d = doc.to_dict()
+        records.append({"type": "運動", "id": doc.id, "name": d["exercise"], "calories": d["burned_calories"], "timestamp": d["timestamp"]})
+
+    records.sort(key=lambda x: x["timestamp"])
+    return records, date_str
+
+def show_delete_list(user_id):
+    records, _ = get_today_records_with_ids(user_id)
+    if not records:
+        return "今日はまだ記録がありません。"
+    reply = "🗑 削除する番号を送ってください\n例：「削除 2」\n"
+    for i, r in enumerate(records, 1):
+        if r["type"] == "食事":
+            reply += f"\n{i}. 🍽 {r['name']}（{r['calories']} kcal）"
+        else:
+            reply += f"\n{i}. 🏃 {r['name']}（消費{r['calories']} kcal）"
+    return reply
+
+def delete_by_number(user_id, number):
+    records, date_str = get_today_records_with_ids(user_id)
+    if not records:
+        return "削除できる記録がありません。"
+    if number < 1 or number > len(records):
+        return f"1〜{len(records)}の番号を入力してください。"
+    record = records[number - 1]
+    if record["type"] == "食事":
+        db.collection("meals").document(user_id).collection(date_str).document(record["id"]).delete()
+    else:
+        db.collection("exercises").document(user_id).collection(date_str).document(record["id"]).delete()
+    return f"🗑 「{record['name']}」の記録を削除しました！"
+
 def delete_last_record(user_id):
     now = datetime.now(JST)
     date_str = now.strftime("%Y-%m-%d")
@@ -148,25 +193,9 @@ def delete_last_record(user_id):
         return "削除できる記録がありません。"
 
 def get_today_records(user_id):
-    now = datetime.now(JST)
-    date_str = now.strftime("%Y-%m-%d")
-    records = []
-
-    meals = db.collection("meals").document(user_id).collection(date_str).order_by("timestamp").stream()
-    for doc in meals:
-        d = doc.to_dict()
-        records.append({"type": "食事", "name": d["dish"], "calories": d["calories"], "timestamp": d["timestamp"]})
-
-    exercises = db.collection("exercises").document(user_id).collection(date_str).order_by("timestamp").stream()
-    for doc in exercises:
-        d = doc.to_dict()
-        records.append({"type": "運動", "name": d["exercise"], "calories": d["burned_calories"], "timestamp": d["timestamp"]})
-
-    records.sort(key=lambda x: x["timestamp"])
-
+    records, _ = get_today_records_with_ids(user_id)
     if not records:
         return "今日はまだ記録がありません。"
-
     reply = "📋 今日の記録\n"
     for r in records:
         if r["type"] == "食事":
@@ -277,6 +306,14 @@ def callback():
                     if carbs: reply += f"\n炭水化物：{carbs} g"
                 except:
                     reply = "目標設定の形式が正しくありません。\n例：目標設定 2000 150 50 250"
+
+            elif user_text.startswith("削除 "):
+                try:
+                    number = int(user_text.replace("削除", "").strip())
+                    reply = delete_by_number(user_id, number)
+                except:
+                    reply = show_delete_list(user_id)
+
             else:
                 try:
                     msg_type_classified = classify_message(user_text)
@@ -312,11 +349,14 @@ def callback():
                 elif msg_type_classified == "記録一覧":
                     reply = get_today_records(user_id)
 
-                elif msg_type_classified == "削除":
+                elif msg_type_classified == "削除リスト":
+                    reply = show_delete_list(user_id)
+
+                elif msg_type_classified == "やり直し":
                     reply = delete_last_record(user_id)
 
                 else:
-                    reply = "食事の記録：料理名や食べたものを送ってください\n運動の記録：運動内容や歩数を送ってください\n合計確認：「今日の合計」と送ってください\n記録一覧：「今日の記録」と送ってください\n削除：「やり直し」と送ってください"
+                    reply = "食事の記録：料理名や食べたものを送ってください\n運動の記録：運動内容や歩数を送ってください\n合計確認：「今日の合計」と送ってください\n記録一覧：「今日の記録」と送ってください\n削除：「削除」と送ってください"
 
             reply_message(reply_token, reply)
 
