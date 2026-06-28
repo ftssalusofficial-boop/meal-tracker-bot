@@ -57,6 +57,7 @@ HELP_TEXT = """📖 SALUS MEAL 使い方
 目標設定 2000 150 50 250
 （カロリー タンパク質 脂質 炭水化物）
 ※文字を打つと正しく認識されなくなってしまいます！"""
+
 def reply_message(reply_token, text):
     headers = {
         "Content-Type": "application/json",
@@ -310,8 +311,18 @@ def format_total_reply(total, burned, goal):
 def callback():
     body = request.get_json()
     for event in body.get("events", []):
+
+        if event["type"] == "follow":
+            user_id = event["source"]["userId"]
+            save_user_profile(user_id)
+            welcome = f"🎉 SALUS MEALへようこそ！\n\n{HELP_TEXT}"
+            reply_token = event["replyToken"]
+            reply_message(reply_token, welcome)
+            continue
+
         if event["type"] != "message":
             continue
+
         reply_token = event["replyToken"]
         user_id = event["source"]["userId"]
         save_user_profile(user_id)
