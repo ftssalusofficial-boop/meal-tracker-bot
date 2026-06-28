@@ -2,6 +2,7 @@ from flask import Flask, request
 import os
 import json
 import requests
+import time
 from google import genai
 from google.genai import types
 import firebase_admin
@@ -40,6 +41,28 @@ def get_line_image(message_id):
     response = requests.get(url, headers=headers)
     return response.content
 
+def gemini_generate(prompt, image_bytes=None):
+    for i in range(3):
+        try:
+            if image_bytes:
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=[
+                        types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                        prompt
+                    ]
+                )
+            else:
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt
+                )
+            return response.text
+        except Exception as e:
+            if i == 2:
+                raise e
+            time.sleep(2)
+
 def classify_message(text):
     prompt = f"""以下のメッセージが「食事」「運動」「合計確認」「目標設定」「その他」のどれかを判定してください。
 JSONのみで返してください。例：{{"type":"食事"}}
@@ -52,40 +75,22 @@ JSONのみで返してください。例：{{"type":"食事"}}
 - それ以外 → その他
 
 メッセージ：「{text}」"""
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
-    result = response.text.strip().replace("```json", "").replace("```", "").strip()
-    data = json.loads(result)
+    result = gemini_generate(prompt)
+    clean = result.strip().replace("```json", "").replace("```", "").strip()
+    data = json.loads(clean)
     return data.get("type", "その他")
 
 def analyze_food_text(text):
     prompt = f"「{text}」の栄養素を教えてください。カロリー、タンパク質、脂質、炭水化物をJSON形式のみで返してください。他の文章は不要です。例：{{\"dish\":\"料理名\",\"calories\":500,\"protein\":20,\"fat\":15,\"carbs\":60}}"
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
-    return response.text
+    return gemini_generate(prompt)
 
 def analyze_food_image(image_bytes):
     prompt = "この食事の写真を見て、料理名とカロリー、タンパク質、脂質、炭水化物をJSON形式のみで返してください。他の文章は不要です。例：{\"dish\":\"料理名\",\"calories\":500,\"protein\":20,\"fat\":15,\"carbs\":60}"
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[
-            types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-            prompt
-        ]
-    )
-    return response.text
+    return gemini_generate(prompt, image_bytes)
 
 def analyze_exercise(text):
     prompt = f"「{text}」の消費カロリーを教えてください。運動名と消費カロリーをJSON形式のみで返してください。歩数の場合は距離と消費カロリーを計算してください。他の文章は不要です。例：{{\"exercise\":\"ウォーキング30分\",\"burned_calories\":120}}"
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
-    return response.text
+    return gemini_generate(prompt)
 
 def save_meal(user_id, meal_data):
     now = datetime.now(JST)
@@ -213,7 +218,10 @@ def callback():
                 except:
                     reply = "目標設定の形式が正しくありません。\n例：目標設定 2000 150 50 250"
             else:
-                msg_type_classified = classify_message(user_text)
+                try:
+                    msg_type_classified = classify_message(user_text)
+                except:
+                    msg_type_classified = "その他"
 
                 if msg_type_classified == "合計確認":
                     total = get_daily_total(user_id)
@@ -232,8 +240,8 @@ def callback():
                         reply = "運動を認識できませんでした。もう一度試してください。\n例：ウォーキング30分、スクワット50回"
 
                 elif msg_type_classified == "食事":
-                    result = analyze_food_text(user_text)
                     try:
+                        result = analyze_food_text(user_text)
                         clean = result.strip().replace("```json", "").replace("```", "").strip()
                         meal_data = json.loads(clean)
                         save_meal(user_id, meal_data)
