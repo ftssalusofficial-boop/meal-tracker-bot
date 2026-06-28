@@ -1,7 +1,8 @@
-from flask import Flask, request
+from flask import Flask, request, session
 import os
 import json
 import requests
+from dashboard import init_dashboard
 import time
 from google import genai
 from google.genai import types
@@ -10,6 +11,7 @@ from firebase_admin import credentials, firestore
 from datetime import datetime, timezone, timedelta
 
 app = Flask(__name__)
+init_dashboard(app)
 
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
