@@ -40,6 +40,26 @@ def get_line_image(message_id):
     response = requests.get(url, headers=headers)
     return response.content
 
+def classify_message(text):
+    prompt = f"""以下のメッセージが「食事」「運動」「合計確認」「目標設定」「その他」のどれかを判定してください。
+JSONのみで返してください。例：{{"type":"食事"}}
+
+判定ルール：
+- 料理名、食べ物、飲み物 → 食事
+- 歩いた、走った、泳いだ、歩数、ジョギング、ウォーキング、筋トレ、スクワット、ベンチプレス、腕立て、腹筋、種目名、運動、トレーニング → 運動
+- 今日の合計、合計、今日 → 合計確認
+- 目標設定 → 目標設定
+- それ以外 → その他
+
+メッセージ：「{text}」"""
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
+    result = response.text.strip().replace("```json", "").replace("```", "").strip()
+    data = json.loads(result)
+    return data.get("type", "その他")
+
 def analyze_food_text(text):
     prompt = f"「{text}」の栄養素を教えてください。カロリー、タンパク質、脂質、炭水化物をJSON形式のみで返してください。他の文章は不要です。例：{{\"dish\":\"料理名\",\"calories\":500,\"protein\":20,\"fat\":15,\"carbs\":60}}"
     response = client.models.generate_content(
@@ -60,7 +80,7 @@ def analyze_food_image(image_bytes):
     return response.text
 
 def analyze_exercise(text):
-    prompt = f"「{text}」の消費カロリーを教えてください。運動名と消費カロリーをJSON形式のみで返してください。他の文章は不要です。例：{{\"exercise\":\"ウォーキング30分\",\"burned_calories\":120}}"
+    prompt = f"「{text}」の消費カロリーを教えてください。運動名と消費カロリーをJSON形式のみで返してください。歩数の場合は距離と消費カロリーを計算してください。他の文章は不要です。例：{{\"exercise\":\"ウォーキング30分\",\"burned_calories\":120}}"
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=prompt
@@ -133,7 +153,7 @@ def format_total_reply(total, burned, goal):
     if goal:
         reply += "\n\n🎯 目標との比較"
         cal_remaining = goal["calories"] - net
-        cal_percent = int(net / goal["calories"] * 100)
+        cal_percent = int(net / goal["calories"] * 100) if goal["calories"] > 0 else 0
         if cal_remaining > 0:
             reply += f"\nカロリー：残り{cal_remaining} kcal（{cal_percent}%達成）"
         else:
@@ -177,21 +197,8 @@ def callback():
 
         elif msg_type == "text":
             user_text = event["message"]["text"]
-            if user_text == "今日の合計":
-                total = get_daily_total(user_id)
-                burned = get_daily_exercise_total(user_id)
-                goal = get_goal(user_id)
-                reply = format_total_reply(total, burned, goal)
-            elif user_text.startswith("運動"):
-                try:
-                    result = analyze_exercise(user_text)
-                    clean = result.strip().replace("```json", "").replace("```", "").strip()
-                    exercise_data = json.loads(clean)
-                    save_exercise(user_id, exercise_data)
-                    reply = f"🏃 {exercise_data['exercise']}\n\n消費カロリー：{exercise_data['burned_calories']} kcal\n\n✅ 記録しました！"
-                except:
-                    reply = "運動を認識できませんでした。\n例：運動 ウォーキング 30分"
-            elif user_text.startswith("目標設定"):
+
+            if user_text.startswith("目標設定"):
                 try:
                     parts = user_text.replace("目標設定", "").strip().split()
                     calories = int(parts[0])
@@ -204,16 +211,39 @@ def callback():
                     if fat: reply += f"\n脂質：{fat} g"
                     if carbs: reply += f"\n炭水化物：{carbs} g"
                 except:
-                    reply = "目標設定の形式が正しくありません。\n例：目標設定 2000 150 50 250\n（カロリー タンパク質 脂質 炭水化物）"
+                    reply = "目標設定の形式が正しくありません。\n例：目標設定 2000 150 50 250"
             else:
-                result = analyze_food_text(user_text)
-                try:
-                    clean = result.strip().replace("```json", "").replace("```", "").strip()
-                    meal_data = json.loads(clean)
-                    save_meal(user_id, meal_data)
-                    reply = f"🍽 {meal_data['dish']}\n\nカロリー：{meal_data['calories']} kcal\nタンパク質：{meal_data['protein']} g\n脂質：{meal_data['fat']} g\n炭水化物：{meal_data['carbs']} g\n\n✅ 記録しました！"
-                except:
-                    reply = "食事を認識できませんでした。料理名を入力してみてください。"
+                msg_type_classified = classify_message(user_text)
+
+                if msg_type_classified == "合計確認":
+                    total = get_daily_total(user_id)
+                    burned = get_daily_exercise_total(user_id)
+                    goal = get_goal(user_id)
+                    reply = format_total_reply(total, burned, goal)
+
+                elif msg_type_classified == "運動":
+                    try:
+                        result = analyze_exercise(user_text)
+                        clean = result.strip().replace("```json", "").replace("```", "").strip()
+                        exercise_data = json.loads(clean)
+                        save_exercise(user_id, exercise_data)
+                        reply = f"🏃 {exercise_data['exercise']}\n\n消費カロリー：{exercise_data['burned_calories']} kcal\n\n✅ 記録しました！"
+                    except:
+                        reply = "運動を認識できませんでした。もう一度試してください。\n例：ウォーキング30分、スクワット50回"
+
+                elif msg_type_classified == "食事":
+                    result = analyze_food_text(user_text)
+                    try:
+                        clean = result.strip().replace("```json", "").replace("```", "").strip()
+                        meal_data = json.loads(clean)
+                        save_meal(user_id, meal_data)
+                        reply = f"🍽 {meal_data['dish']}\n\nカロリー：{meal_data['calories']} kcal\nタンパク質：{meal_data['protein']} g\n脂質：{meal_data['fat']} g\n炭水化物：{meal_data['carbs']} g\n\n✅ 記録しました！"
+                    except:
+                        reply = "食事を認識できませんでした。料理名を入力してみてください。"
+
+                else:
+                    reply = "食事の記録：料理名や食べたものを送ってください\n運動の記録：運動内容や歩数を送ってください\n合計確認：「今日の合計」と送ってください"
+
             reply_message(reply_token, reply)
 
         else:
