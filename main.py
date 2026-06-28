@@ -1,4 +1,5 @@
-from flask import Flask, request
+全部消して以下をコピペしてください👇
+pythonfrom flask import Flask, request
 import os
 import json
 import requests
@@ -64,7 +65,7 @@ def gemini_generate(prompt, image_bytes=None):
             time.sleep(2)
 
 def classify_message(text):
-    prompt = f"""以下のメッセージが「食事」「運動」「合計確認」「目標設定」「その他」のどれかを判定してください。
+    prompt = f"""以下のメッセージが「食事」「運動」「合計確認」「目標設定」「記録一覧」「削除」「その他」のどれかを判定してください。
 JSONのみで返してください。例：{{"type":"食事"}}
 
 判定ルール：
@@ -72,6 +73,8 @@ JSONのみで返してください。例：{{"type":"食事"}}
 - 歩いた、走った、泳いだ、歩数、ジョギング、ウォーキング、筋トレ、スクワット、ベンチプレス、腕立て、腹筋、種目名、運動、トレーニング → 運動
 - 今日の合計、合計、今日 → 合計確認
 - 目標設定 → 目標設定
+- 今日の記録、記録一覧、記録を見る → 記録一覧
+- 削除、やり直し、取り消し、消して、間違えた → 削除
 - それ以外 → その他
 
 メッセージ：「{text}」"""
@@ -114,6 +117,64 @@ def save_exercise(user_id, exercise_data):
         "burned_calories": exercise_data["burned_calories"],
         "timestamp": now.isoformat()
     })
+
+def delete_last_record(user_id):
+    now = datetime.now(JST)
+    date_str = now.strftime("%Y-%m-%d")
+    last_meal = None
+    last_exercise = None
+
+    meals = db.collection("meals").document(user_id).collection(date_str).order_by("timestamp", direction=firestore.Query.DESCENDING).limit(1).stream()
+    for doc in meals:
+        last_meal = (doc.id, doc.to_dict())
+
+    exercises = db.collection("exercises").document(user_id).collection(date_str).order_by("timestamp", direction=firestore.Query.DESCENDING).limit(1).stream()
+    for doc in exercises:
+        last_exercise = (doc.id, doc.to_dict())
+
+    if last_meal and last_exercise:
+        if last_meal[1]["timestamp"] > last_exercise[1]["timestamp"]:
+            db.collection("meals").document(user_id).collection(date_str).document(last_meal[0]).delete()
+            return f"🗑 「{last_meal[1]['dish']}」の記録を削除しました！"
+        else:
+            db.collection("exercises").document(user_id).collection(date_str).document(last_exercise[0]).delete()
+            return f"🗑 「{last_exercise[1]['exercise']}」の記録を削除しました！"
+    elif last_meal:
+        db.collection("meals").document(user_id).collection(date_str).document(last_meal[0]).delete()
+        return f"🗑 「{last_meal[1]['dish']}」の記録を削除しました！"
+    elif last_exercise:
+        db.collection("exercises").document(user_id).collection(date_str).document(last_exercise[0]).delete()
+        return f"🗑 「{last_exercise[1]['exercise']}」の記録を削除しました！"
+    else:
+        return "削除できる記録がありません。"
+
+def get_today_records(user_id):
+    now = datetime.now(JST)
+    date_str = now.strftime("%Y-%m-%d")
+    records = []
+
+    meals = db.collection("meals").document(user_id).collection(date_str).order_by("timestamp").stream()
+    for doc in meals:
+        d = doc.to_dict()
+        records.append({"type": "食事", "name": d["dish"], "calories": d["calories"], "timestamp": d["timestamp"]})
+
+    exercises = db.collection("exercises").document(user_id).collection(date_str).order_by("timestamp").stream()
+    for doc in exercises:
+        d = doc.to_dict()
+        records.append({"type": "運動", "name": d["exercise"], "calories": d["burned_calories"], "timestamp": d["timestamp"]})
+
+    records.sort(key=lambda x: x["timestamp"])
+
+    if not records:
+        return "今日はまだ記録がありません。"
+
+    reply = "📋 今日の記録\n"
+    for r in records:
+        if r["type"] == "食事":
+            reply += f"\n🍽 {r['name']}（{r['calories']} kcal）"
+        else:
+            reply += f"\n🏃 {r['name']}（消費{r['calories']} kcal）"
+    return reply
 
 def get_daily_total(user_id):
     now = datetime.now(JST)
@@ -237,7 +298,7 @@ def callback():
                         save_exercise(user_id, exercise_data)
                         reply = f"🏃 {exercise_data['exercise']}\n\n消費カロリー：{exercise_data['burned_calories']} kcal\n\n✅ 記録しました！"
                     except:
-                        reply = "運動を認識できませんでした。もう一度試してください。\n例：ウォーキング30分、スクワット50回"
+                        reply = "運動を認識できませんでした。もう一度試してください。"
 
                 elif msg_type_classified == "食事":
                     try:
@@ -249,8 +310,14 @@ def callback():
                     except:
                         reply = "食事を認識できませんでした。料理名を入力してみてください。"
 
+                elif msg_type_classified == "記録一覧":
+                    reply = get_today_records(user_id)
+
+                elif msg_type_classified == "削除":
+                    reply = delete_last_record(user_id)
+
                 else:
-                    reply = "食事の記録：料理名や食べたものを送ってください\n運動の記録：運動内容や歩数を送ってください\n合計確認：「今日の合計」と送ってください"
+                    reply = "食事の記録：料理名や食べたものを送ってください\n運動の記録：運動内容や歩数を送ってください\n合計確認：「今日の合計」と送ってください\n記録一覧：「今日の記録」と送ってください\n削除：「やり直し」と送ってください"
 
             reply_message(reply_token, reply)
 
