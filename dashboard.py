@@ -47,16 +47,18 @@ DASHBOARD_HTML = """
 body { font-family: sans-serif; background: #f5f5f5; margin: 0; padding: 20px; }
 h1 { color: #333; }
 .date { color: #888; font-size: 14px; margin-bottom: 24px; }
-.card { background: white; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); display: flex; align-items: center; justify-content: space-between; }
+.card { background: white; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.avatar { width: 48px; height: 48px; border-radius: 50%; background: #e0e0e0; object-fit: cover; flex-shrink: 0; }
 .user-info { flex: 1; }
-.user-id { font-size: 12px; color: #999; margin-bottom: 4px; }
-.stats { font-size: 14px; color: #555; }
+.user-name { font-size: 16px; font-weight: bold; color: #333; margin-bottom: 4px; }
+.user-id { font-size: 11px; color: #bbb; margin-bottom: 6px; }
+.stats { font-size: 13px; color: #555; }
 .badge { padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: bold; }
 .badge-good { background: #e8f5e9; color: #2e7d32; }
 .badge-none { background: #f5f5f5; color: #999; }
-.progress-bar { background: #eee; border-radius: 4px; height: 8px; width: 200px; margin-top: 8px; }
+.progress-bar { background: #eee; border-radius: 4px; height: 8px; width: 160px; margin-top: 8px; }
 .progress-fill { background: #4CAF50; border-radius: 4px; height: 8px; }
-.detail-btn { padding: 8px 16px; background: #2196F3; color: white; border: none; border-radius: 8px; cursor: pointer; text-decoration: none; font-size: 14px; }
+.detail-btn { padding: 8px 16px; background: #2196F3; color: white; border: none; border-radius: 8px; cursor: pointer; text-decoration: none; font-size: 14px; white-space: nowrap; }
 .logout { float: right; padding: 8px 16px; background: #f44336; color: white; border: none; border-radius: 8px; cursor: pointer; text-decoration: none; font-size: 14px; }
 </style>
 </head>
@@ -65,8 +67,14 @@ h1 { color: #333; }
 <p class="date">📅 {{ date }}の記録</p>
 {% for user in users %}
 <div class="card">
+  {% if user.picture_url %}
+  <img class="avatar" src="{{ user.picture_url }}" alt="{{ user.display_name }}">
+  {% else %}
+  <div class="avatar" style="display:flex;align-items:center;justify-content:center;font-size:20px;">👤</div>
+  {% endif %}
   <div class="user-info">
-    <div class="user-id">ID: {{ user.user_id[:20] }}...</div>
+    <div class="user-name">{{ user.display_name }}</div>
+    <div class="user-id">{{ user.user_id[:16] }}...</div>
     <div class="stats">
       🍽 摂取：{{ user.total_calories }} kcal　
       🏃 消費：{{ user.burned_calories }} kcal　
@@ -76,7 +84,7 @@ h1 { color: #333; }
     <div class="progress-bar">
       <div class="progress-fill" style="width: {{ [user.percent, 100]|min }}%"></div>
     </div>
-    <div style="font-size:12px;color:#888;margin-top:4px;">目標 {{ user.goal_calories }} kcal の {{ user.percent }}% 達成</div>
+    <div style="font-size:11px;color:#888;margin-top:4px;">目標 {{ user.goal_calories }} kcal の {{ user.percent }}% 達成</div>
     {% endif %}
   </div>
   <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
@@ -107,6 +115,8 @@ DETAIL_HTML = """
 body { font-family: sans-serif; background: #f5f5f5; margin: 0; padding: 20px; }
 h1 { color: #333; }
 .back { display: inline-block; margin-bottom: 16px; color: #2196F3; text-decoration: none; }
+.profile { display: flex; align-items: center; gap: 16px; background: white; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+.avatar { width: 64px; height: 64px; border-radius: 50%; background: #e0e0e0; object-fit: cover; }
 .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 16px; }
 .stat-box { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); text-align: center; }
 .stat-label { font-size: 12px; color: #888; margin-bottom: 4px; }
@@ -120,8 +130,17 @@ h1 { color: #333; }
 </head>
 <body>
 <a href="/dashboard" class="back">← 一覧に戻る</a>
-<h1>👤 顧客詳細</h1>
-<p style="font-size:12px;color:#999;">ID: {{ data.user_id }}</p>
+<div class="profile">
+  {% if data.picture_url %}
+  <img class="avatar" src="{{ data.picture_url }}" alt="{{ data.display_name }}">
+  {% else %}
+  <div class="avatar" style="display:flex;align-items:center;justify-content:center;font-size:28px;">👤</div>
+  {% endif %}
+  <div>
+    <h1 style="margin:0;">{{ data.display_name }}</h1>
+    <p style="font-size:12px;color:#999;margin:4px 0 0;">{{ data.user_id }}</p>
+  </div>
+</div>
 <div class="grid">
   <div class="stat-box">
     <div class="stat-label">🍽 摂取カロリー</div>
@@ -172,10 +191,12 @@ def init_dashboard(app):
         users = []
         now = datetime.now(JST)
         date_str = now.strftime("%Y-%m-%d")
-        goals_docs = db.collection("goals").stream()
-        for doc in goals_docs:
+        user_docs = db.collection("users").stream()
+        for doc in user_docs:
             user_id = doc.id
-            goal = doc.to_dict()
+            profile = doc.to_dict()
+            goal_doc = db.collection("goals").document(user_id).get()
+            goal = goal_doc.to_dict() if goal_doc.exists else {}
             meals = list(db.collection("meals").document(user_id).collection(date_str).stream())
             exercises = list(db.collection("exercises").document(user_id).collection(date_str).stream())
             total_calories = sum(m.to_dict().get("calories", 0) for m in meals)
@@ -186,6 +207,8 @@ def init_dashboard(app):
             has_record = len(meals) > 0 or len(exercises) > 0
             users.append({
                 "user_id": user_id,
+                "display_name": profile.get("display_name", "不明"),
+                "picture_url": profile.get("picture_url", ""),
                 "total_calories": total_calories,
                 "burned_calories": burned_calories,
                 "net_calories": net_calories,
@@ -198,6 +221,8 @@ def init_dashboard(app):
     def get_user_detail(user_id):
         now = datetime.now(JST)
         date_str = now.strftime("%Y-%m-%d")
+        profile_doc = db.collection("users").document(user_id).get()
+        profile = profile_doc.to_dict() if profile_doc.exists else {}
         meals = [doc.to_dict() for doc in db.collection("meals").document(user_id).collection(date_str).order_by("timestamp").stream()]
         exercises = [doc.to_dict() for doc in db.collection("exercises").document(user_id).collection(date_str).order_by("timestamp").stream()]
         goal_doc = db.collection("goals").document(user_id).get()
@@ -207,6 +232,8 @@ def init_dashboard(app):
         net_calories = total_calories - burned_calories
         return {
             "user_id": user_id,
+            "display_name": profile.get("display_name", "不明"),
+            "picture_url": profile.get("picture_url", ""),
             "meals": meals,
             "exercises": exercises,
             "goal": goal,
