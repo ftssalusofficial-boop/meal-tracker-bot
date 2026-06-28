@@ -1,4 +1,5 @@
-from flask import Flask, request
+全部消して以下をコピペしてください👇
+pythonfrom flask import Flask, request
 import os
 import json
 import requests
@@ -59,6 +60,14 @@ def analyze_food_image(image_bytes):
     )
     return response.text
 
+def analyze_exercise(text):
+    prompt = f"「{text}」の消費カロリーを教えてください。運動名と消費カロリーをJSON形式のみで返してください。他の文章は不要です。例：{{\"exercise\":\"ウォーキング30分\",\"burned_calories\":120}}"
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
+    return response.text
+
 def save_meal(user_id, meal_data):
     now = datetime.now(JST)
     date_str = now.strftime("%Y-%m-%d")
@@ -69,6 +78,16 @@ def save_meal(user_id, meal_data):
         "protein": meal_data["protein"],
         "fat": meal_data["fat"],
         "carbs": meal_data["carbs"],
+        "timestamp": now.isoformat()
+    })
+
+def save_exercise(user_id, exercise_data):
+    now = datetime.now(JST)
+    date_str = now.strftime("%Y-%m-%d")
+    doc_ref = db.collection("exercises").document(user_id).collection(date_str).document()
+    doc_ref.set({
+        "exercise": exercise_data["exercise"],
+        "burned_calories": exercise_data["burned_calories"],
         "timestamp": now.isoformat()
     })
 
@@ -85,6 +104,16 @@ def get_daily_total(user_id):
         total["carbs"] += d.get("carbs", 0)
     return total
 
+def get_daily_exercise_total(user_id):
+    now = datetime.now(JST)
+    date_str = now.strftime("%Y-%m-%d")
+    docs = db.collection("exercises").document(user_id).collection(date_str).stream()
+    burned = 0
+    for doc in docs:
+        d = doc.to_dict()
+        burned += d.get("burned_calories", 0)
+    return burned
+
 def set_goal(user_id, calories, protein=None, fat=None, carbs=None):
     data = {"calories": calories}
     if protein: data["protein"] = protein
@@ -98,12 +127,14 @@ def get_goal(user_id):
         return doc.to_dict()
     return None
 
-def format_total_reply(total, goal):
-    reply = f"📊 今日の合計\n\nカロリー：{total['calories']} kcal\nタンパク質：{total['protein']} g\n脂質：{total['fat']} g\n炭水化物：{total['carbs']} g"
+def format_total_reply(total, burned, goal):
+    net = total["calories"] - burned
+    reply = f"📊 今日の合計\n\n🍽 摂取カロリー：{total['calories']} kcal\n🏃 消費カロリー：{burned} kcal\n⚡ 純カロリー：{net} kcal"
+    reply += f"\n\nタンパク質：{total['protein']} g\n脂質：{total['fat']} g\n炭水化物：{total['carbs']} g"
     if goal:
         reply += "\n\n🎯 目標との比較"
-        cal_remaining = goal["calories"] - total["calories"]
-        cal_percent = int(total["calories"] / goal["calories"] * 100)
+        cal_remaining = goal["calories"] - net
+        cal_percent = int(net / goal["calories"] * 100)
         if cal_remaining > 0:
             reply += f"\nカロリー：残り{cal_remaining} kcal（{cal_percent}%達成）"
         else:
@@ -149,8 +180,18 @@ def callback():
             user_text = event["message"]["text"]
             if user_text == "今日の合計":
                 total = get_daily_total(user_id)
+                burned = get_daily_exercise_total(user_id)
                 goal = get_goal(user_id)
-                reply = format_total_reply(total, goal)
+                reply = format_total_reply(total, burned, goal)
+            elif user_text.startswith("運動"):
+                try:
+                    result = analyze_exercise(user_text)
+                    clean = result.strip().replace("```json", "").replace("```", "").strip()
+                    exercise_data = json.loads(clean)
+                    save_exercise(user_id, exercise_data)
+                    reply = f"🏃 {exercise_data['exercise']}\n\n消費カロリー：{exercise_data['burned_calories']} kcal\n\n✅ 記録しました！"
+                except:
+                    reply = "運動を認識できませんでした。\n例：運動 ウォーキング 30分"
             elif user_text.startswith("目標設定"):
                 try:
                     parts = user_text.replace("目標設定", "").strip().split()
