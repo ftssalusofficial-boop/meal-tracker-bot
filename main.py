@@ -44,6 +44,19 @@ def get_line_image(message_id):
     response = requests.get(url, headers=headers)
     return response.content
 
+def save_user_profile(user_id):
+    doc = db.collection("users").document(user_id).get()
+    if not doc.exists:
+        url = f"https://api.line.me/v2/bot/profile/{user_id}"
+        headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            profile = response.json()
+            db.collection("users").document(user_id).set({
+                "display_name": profile.get("displayName", "不明"),
+                "picture_url": profile.get("pictureUrl", "")
+            })
+
 def gemini_generate(prompt, image_bytes=None):
     for i in range(3):
         try:
@@ -277,6 +290,7 @@ def callback():
             continue
         reply_token = event["replyToken"]
         user_id = event["source"]["userId"]
+        save_user_profile(user_id)
         msg_type = event["message"]["type"]
 
         if msg_type == "image":
