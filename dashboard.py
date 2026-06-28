@@ -1,83 +1,10 @@
-from flask import Flask, request, render_template_string, redirect, session
+from flask import request, render_template_string, redirect, session
 import os
-import json
 from firebase_admin import firestore
 from datetime import datetime, timezone, timedelta
 
 JST = timezone(timedelta(hours=9))
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "salus2024")
-
-db = firestore.client()
-
-def get_all_users():
-    users = []
-    now = datetime.now(JST)
-    date_str = now.strftime("%Y-%m-%d")
-    
-    goals_docs = db.collection("goals").stream()
-    for doc in goals_docs:
-        user_id = doc.id
-        goal = doc.to_dict()
-        
-        meals = list(db.collection("meals").document(user_id).collection(date_str).stream())
-        exercises = list(db.collection("exercises").document(user_id).collection(date_str).stream())
-        
-        total_calories = sum(m.to_dict().get("calories", 0) for m in meals)
-        burned_calories = sum(e.to_dict().get("burned_calories", 0) for e in exercises)
-        net_calories = total_calories - burned_calories
-        
-        goal_calories = goal.get("calories", 0)
-        if goal_calories > 0:
-            percent = int(net_calories / goal_calories * 100)
-        else:
-            percent = 0
-        
-        has_record = len(meals) > 0 or len(exercises) > 0
-        
-        users.append({
-            "user_id": user_id,
-            "meal_count": len(meals),
-            "exercise_count": len(exercises),
-            "total_calories": total_calories,
-            "burned_calories": burned_calories,
-            "net_calories": net_calories,
-            "goal_calories": goal_calories,
-            "percent": percent,
-            "has_record": has_record
-        })
-    
-    return users
-
-def get_user_detail(user_id):
-    now = datetime.now(JST)
-    date_str = now.strftime("%Y-%m-%d")
-    
-    meals = []
-    for doc in db.collection("meals").document(user_id).collection(date_str).order_by("timestamp").stream():
-        d = doc.to_dict()
-        meals.append(d)
-    
-    exercises = []
-    for doc in db.collection("exercises").document(user_id).collection(date_str).order_by("timestamp").stream():
-        d = doc.to_dict()
-        exercises.append(d)
-    
-    goal_doc = db.collection("goals").document(user_id).get()
-    goal = goal_doc.to_dict() if goal_doc.exists else {}
-    
-    total_calories = sum(m.get("calories", 0) for m in meals)
-    burned_calories = sum(e.get("burned_calories", 0) for e in exercises)
-    net_calories = total_calories - burned_calories
-    
-    return {
-        "user_id": user_id,
-        "meals": meals,
-        "exercises": exercises,
-        "goal": goal,
-        "total_calories": total_calories,
-        "burned_calories": burned_calories,
-        "net_calories": net_calories
-    }
 
 LOGIN_HTML = """
 <!DOCTYPE html>
@@ -126,7 +53,6 @@ h1 { color: #333; }
 .stats { font-size: 14px; color: #555; }
 .badge { padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: bold; }
 .badge-good { background: #e8f5e9; color: #2e7d32; }
-.badge-warning { background: #fff3e0; color: #e65100; }
 .badge-none { background: #f5f5f5; color: #999; }
 .progress-bar { background: #eee; border-radius: 4px; height: 8px; width: 200px; margin-top: 8px; }
 .progress-fill { background: #4CAF50; border-radius: 4px; height: 8px; }
@@ -181,13 +107,12 @@ DETAIL_HTML = """
 body { font-family: sans-serif; background: #f5f5f5; margin: 0; padding: 20px; }
 h1 { color: #333; }
 .back { display: inline-block; margin-bottom: 16px; color: #2196F3; text-decoration: none; }
-.summary { background: white; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-.summary h3 { margin: 0 0 12px; color: #555; }
-.big-num { font-size: 28px; font-weight: bold; color: #333; }
-.unit { font-size: 14px; color: #888; }
 .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 16px; }
 .stat-box { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); text-align: center; }
 .stat-label { font-size: 12px; color: #888; margin-bottom: 4px; }
+.big-num { font-size: 28px; font-weight: bold; color: #333; }
+.unit { font-size: 14px; color: #888; }
+.summary { background: white; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
 .record-list { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
 .record-item { padding: 10px 0; border-bottom: 1px solid #f0f0f0; font-size: 14px; color: #555; }
 .record-item:last-child { border-bottom: none; }
@@ -197,7 +122,6 @@ h1 { color: #333; }
 <a href="/dashboard" class="back">← 一覧に戻る</a>
 <h1>👤 顧客詳細</h1>
 <p style="font-size:12px;color:#999;">ID: {{ data.user_id }}</p>
-
 <div class="grid">
   <div class="stat-box">
     <div class="stat-label">🍽 摂取カロリー</div>
@@ -215,17 +139,15 @@ h1 { color: #333; }
     <div class="unit">kcal</div>
   </div>
 </div>
-
 {% if data.goal %}
 <div class="summary">
-  <h3>🎯 目標</h3>
+  <h3 style="margin:0 0 12px;color:#555;">🎯 目標</h3>
   カロリー：{{ data.goal.get('calories', '-') }} kcal
-  {% if data.goal.get('protein') %}／ タンパク質：{{ data.goal.protein }} g{% endif %}
-  {% if data.goal.get('fat') %}／ 脂質：{{ data.goal.fat }} g{% endif %}
-  {% if data.goal.get('carbs') %}／ 炭水化物：{{ data.goal.carbs }} g{% endif %}
+  {% if data.goal.get('protein') %}／ タンパク質：{{ data.goal.get('protein') }} g{% endif %}
+  {% if data.goal.get('fat') %}／ 脂質：{{ data.goal.get('fat') }} g{% endif %}
+  {% if data.goal.get('carbs') %}／ 炭水化物：{{ data.goal.get('carbs') }} g{% endif %}
 </div>
 {% endif %}
-
 <div class="record-list">
   <h3 style="margin:0 0 12px;color:#555;">📋 今日の記録</h3>
   {% for meal in data.meals %}
@@ -243,7 +165,55 @@ h1 { color: #333; }
 """
 
 def init_dashboard(app):
+    db = firestore.client()
     app.secret_key = os.environ.get("SECRET_KEY", "salus-secret-2024")
+
+    def get_all_users():
+        users = []
+        now = datetime.now(JST)
+        date_str = now.strftime("%Y-%m-%d")
+        goals_docs = db.collection("goals").stream()
+        for doc in goals_docs:
+            user_id = doc.id
+            goal = doc.to_dict()
+            meals = list(db.collection("meals").document(user_id).collection(date_str).stream())
+            exercises = list(db.collection("exercises").document(user_id).collection(date_str).stream())
+            total_calories = sum(m.to_dict().get("calories", 0) for m in meals)
+            burned_calories = sum(e.to_dict().get("burned_calories", 0) for e in exercises)
+            net_calories = total_calories - burned_calories
+            goal_calories = goal.get("calories", 0)
+            percent = int(net_calories / goal_calories * 100) if goal_calories > 0 else 0
+            has_record = len(meals) > 0 or len(exercises) > 0
+            users.append({
+                "user_id": user_id,
+                "total_calories": total_calories,
+                "burned_calories": burned_calories,
+                "net_calories": net_calories,
+                "goal_calories": goal_calories,
+                "percent": percent,
+                "has_record": has_record
+            })
+        return users
+
+    def get_user_detail(user_id):
+        now = datetime.now(JST)
+        date_str = now.strftime("%Y-%m-%d")
+        meals = [doc.to_dict() for doc in db.collection("meals").document(user_id).collection(date_str).order_by("timestamp").stream()]
+        exercises = [doc.to_dict() for doc in db.collection("exercises").document(user_id).collection(date_str).order_by("timestamp").stream()]
+        goal_doc = db.collection("goals").document(user_id).get()
+        goal = goal_doc.to_dict() if goal_doc.exists else {}
+        total_calories = sum(m.get("calories", 0) for m in meals)
+        burned_calories = sum(e.get("burned_calories", 0) for e in exercises)
+        net_calories = total_calories - burned_calories
+        return {
+            "user_id": user_id,
+            "meals": meals,
+            "exercises": exercises,
+            "goal": goal,
+            "total_calories": total_calories,
+            "burned_calories": burned_calories,
+            "net_calories": net_calories
+        }
 
     @app.route("/dashboard/login", methods=["GET", "POST"])
     def dashboard_login():
