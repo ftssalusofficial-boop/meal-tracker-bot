@@ -1,5 +1,4 @@
-下の大きな入力欄にこれをコピペしてください👇
-pythonfrom flask import Flask, request, render_template_string, redirect, session
+from flask import Flask, request, render_template_string, redirect, session
 import os
 import json
 from firebase_admin import firestore
