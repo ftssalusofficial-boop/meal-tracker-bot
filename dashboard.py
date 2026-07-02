@@ -72,21 +72,17 @@ h1 { color: #333; }
 </head>
 <body>
 <h1>🏋️ SALUS 管理画面 <a href="/dashboard/logout" class="logout">ログアウト</a></h1>
-
 <form class="date-form" method="get" action="/dashboard">
   <label style="font-size:14px;color:#555;">📅 日付：</label>
   <input type="date" name="date" value="{{ selected_date }}">
   <button type="submit">表示</button>
   <a href="/dashboard" style="font-size:13px;color:#2196F3;">今日に戻る</a>
 </form>
-
 <div class="tabs">
   <a href="/dashboard?date={{ selected_date }}&tab=active" class="tab {% if tab == 'active' %}active{% endif %}">アクティブ（{{ active_count }}）</a>
   <a href="/dashboard?date={{ selected_date }}&tab=retired" class="tab {% if tab == 'retired' %}active{% endif %}">退会済み（{{ retired_count }}）</a>
 </div>
-
 <p style="font-size:13px;color:#888;margin-bottom:16px;">{{ selected_date_jp }}の記録</p>
-
 {% for user in users %}
 <div class="card" {% if user.is_retired %}style="opacity:0.6;"{% endif %}>
   {% if user.picture_url %}
@@ -101,6 +97,7 @@ h1 { color: #333; }
       🍽 摂取：{{ user.total_calories }} kcal　
       🏃 消費：{{ user.burned_calories }} kcal　
       ⚡ 純：{{ user.net_calories }} kcal
+      {% if user.weight %}　⚖️ 体重：{{ user.weight }} kg{% endif %}
     </div>
     {% if user.goal_calories > 0 %}
     <div class="progress-bar">
@@ -149,10 +146,10 @@ h1 { color: #333; }
 .date-form { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .date-form input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; }
 .date-form button { padding: 8px 16px; background: #2196F3; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; }
-.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 16px; }
+.grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 16px; }
 .stat-box { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); text-align: center; }
 .stat-label { font-size: 12px; color: #888; margin-bottom: 4px; }
-.big-num { font-size: 28px; font-weight: bold; color: #333; }
+.big-num { font-size: 24px; font-weight: bold; color: #333; }
 .unit { font-size: 14px; color: #888; }
 .summary { background: white; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
 .record-list { background: white; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
@@ -198,6 +195,11 @@ h1 { color: #333; }
     <div class="big-num">{{ data.net_calories }}</div>
     <div class="unit">kcal</div>
   </div>
+  <div class="stat-box">
+    <div class="stat-label">⚖️ 体重</div>
+    <div class="big-num">{{ data.weight if data.weight else '-' }}</div>
+    <div class="unit">kg</div>
+  </div>
 </div>
 
 {% if data.goal %}
@@ -215,15 +217,23 @@ h1 { color: #333; }
   <canvas id="calorieChart" height="120"></canvas>
 </div>
 
+<div class="chart-box">
+  <h3 style="margin:0 0 16px;color:#555;">⚖️ 過去7日間の体重推移</h3>
+  <canvas id="weightChart" height="120"></canvas>
+</div>
+
 <div class="record-list">
   <h3 style="margin:0 0 12px;color:#555;">📋 {{ selected_date }}の記録</h3>
+  {% if data.weight %}
+  <div class="record-item">⚖️ 体重：{{ data.weight }} kg</div>
+  {% endif %}
   {% for meal in data.meals %}
   <div class="record-item">🍽 {{ meal.dish }}（{{ meal.calories }} kcal / タンパク質{{ meal.protein }}g / 脂質{{ meal.fat }}g / 炭水化物{{ meal.carbs }}g）</div>
   {% endfor %}
   {% for ex in data.exercises %}
   <div class="record-item">🏃 {{ ex.exercise }}（消費{{ ex.burned_calories }} kcal）</div>
   {% endfor %}
-  {% if not data.meals and not data.exercises %}
+  {% if not data.meals and not data.exercises and not data.weight %}
   <p style="color:#999;text-align:center;">この日は記録がありません</p>
   {% endif %}
 </div>
@@ -233,6 +243,7 @@ const labels = {{ chart_labels | tojson }};
 const intakeData = {{ chart_intake | tojson }};
 const burnedData = {{ chart_burned | tojson }};
 const netData = {{ chart_net | tojson }};
+const weightData = {{ chart_weight | tojson }};
 
 new Chart(document.getElementById('calorieChart'), {
   type: 'line',
@@ -248,6 +259,21 @@ new Chart(document.getElementById('calorieChart'), {
     responsive: true,
     plugins: { legend: { position: 'top' } },
     scales: { y: { beginAtZero: true } }
+  }
+});
+
+new Chart(document.getElementById('weightChart'), {
+  type: 'line',
+  data: {
+    labels: labels,
+    datasets: [
+      { label: '体重(kg)', data: weightData, borderColor: '#E8603C', backgroundColor: 'rgba(232,96,60,0.1)', tension: 0.3, fill: true, spanGaps: true }
+    ]
+  },
+  options: {
+    responsive: true,
+    plugins: { legend: { position: 'top' } },
+    scales: { y: { beginAtZero: false } }
   }
 });
 </script>
@@ -280,6 +306,10 @@ def init_dashboard(app):
             goal_calories = goal.get("calories", 0)
             percent = int(net_calories / goal_calories * 100) if goal_calories > 0 else 0
             has_record = len(meals) > 0 or len(exercises) > 0
+            weight_doc = db.collection("weights").document(user_id).collection("records").document(date_str).get()
+            weight = weight_doc.to_dict().get("weight") if weight_doc.exists else None
+            if weight:
+                has_record = True
             users.append({
                 "user_id": user_id,
                 "display_name": profile.get("display_name", "不明"),
@@ -290,7 +320,8 @@ def init_dashboard(app):
                 "goal_calories": goal_calories,
                 "percent": percent,
                 "has_record": has_record,
-                "is_retired": is_retired
+                "is_retired": is_retired,
+                "weight": weight
             })
         return users
 
@@ -301,6 +332,8 @@ def init_dashboard(app):
         exercises = [doc.to_dict() for doc in db.collection("exercises").document(user_id).collection(date_str).order_by("timestamp").stream()]
         goal_doc = db.collection("goals").document(user_id).get()
         goal = goal_doc.to_dict() if goal_doc.exists else {}
+        weight_doc = db.collection("weights").document(user_id).collection("records").document(date_str).get()
+        weight = weight_doc.to_dict().get("weight") if weight_doc.exists else None
         total_calories = sum(m.get("calories", 0) for m in meals)
         burned_calories = sum(e.get("burned_calories", 0) for e in exercises)
         net_calories = total_calories - burned_calories
@@ -311,6 +344,7 @@ def init_dashboard(app):
             "meals": meals,
             "exercises": exercises,
             "goal": goal,
+            "weight": weight,
             "total_calories": total_calories,
             "burned_calories": burned_calories,
             "net_calories": net_calories
@@ -321,6 +355,7 @@ def init_dashboard(app):
         intake_data = []
         burned_data = []
         net_data = []
+        weight_data = []
         now = datetime.now(JST)
         for i in range(6, -1, -1):
             d = now - timedelta(days=i)
@@ -333,7 +368,10 @@ def init_dashboard(app):
             intake_data.append(intake)
             burned_data.append(burned)
             net_data.append(intake - burned)
-        return labels, intake_data, burned_data, net_data
+            weight_doc = db.collection("weights").document(user_id).collection("records").document(date_str).get()
+            weight = weight_doc.to_dict().get("weight") if weight_doc.exists else None
+            weight_data.append(weight)
+        return labels, intake_data, burned_data, net_data, weight_data
 
     @app.route("/dashboard/login", methods=["GET", "POST"])
     def dashboard_login():
@@ -380,14 +418,15 @@ def init_dashboard(app):
         now = datetime.now(JST)
         selected_date = request.args.get("date", now.strftime("%Y-%m-%d"))
         data = get_user_detail(user_id, selected_date)
-        labels, intake, burned, net = get_chart_data(user_id)
+        labels, intake, burned, net, weight = get_chart_data(user_id)
         return render_template_string(DETAIL_HTML,
             data=data,
             selected_date=selected_date,
             chart_labels=labels,
             chart_intake=intake,
             chart_burned=burned,
-            chart_net=net
+            chart_net=net,
+            chart_weight=weight
         )
 
     @app.route("/dashboard/retire/<user_id>")
