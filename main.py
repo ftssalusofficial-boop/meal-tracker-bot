@@ -42,6 +42,9 @@ HELP_TEXT = """📖 SALUS MEAL 使い方
 　　スクワット50回
 　　ベンチプレス60kg 10回3セット
 
+⚖️ 体重を記録
+「体重 68.5」のように送ってください！
+
 📊 今日の合計
 リッチメニューのボタンを押すと今日の合計数値が見れます！
 
@@ -111,7 +114,7 @@ def gemini_generate(prompt, image_bytes=None):
             time.sleep(2)
 
 def classify_message(text):
-    prompt = f"""以下のメッセージが「食事」「運動」「合計確認」「目標設定」「記録一覧」「削除リスト」「やり直し」「使い方」「その他」のどれかを判定してください。
+    prompt = f"""以下のメッセージが「食事」「運動」「合計確認」「目標設定」「記録一覧」「削除リスト」「やり直し」「使い方」「体重記録」「体重確認」「その他」のどれかを判定してください。
 JSONのみで返してください。例：{{"type":"食事"}}
 
 判定ルール：
@@ -123,6 +126,8 @@ JSONのみで返してください。例：{{"type":"食事"}}
 - 削除、削除したい、消したい → 削除リスト
 - やり直し、取り消し、間違えた → やり直し
 - 使い方、ヘルプ、help → 使い方
+- 「体重 68.5」「体重68」など体重と数字 → 体重記録
+- 体重確認、体重推移、体重みたい → 体重確認
 - それ以外 → その他
 
 メッセージ：「{text}」"""
@@ -165,6 +170,46 @@ def save_exercise(user_id, exercise_data):
         "burned_calories": exercise_data["burned_calories"],
         "timestamp": now.isoformat()
     })
+
+def save_weight(user_id, weight):
+    now = datetime.now(JST)
+    date_str = now.strftime("%Y-%m-%d")
+    db.collection("weights").document(user_id).collection("records").document(date_str).set({
+        "weight": weight,
+        "timestamp": now.isoformat()
+    })
+
+def get_weight_history(user_id):
+    now = datetime.now(JST)
+    records = []
+    for i in range(7):
+        d = now - timedelta(days=i)
+        date_str = d.strftime("%Y-%m-%d")
+        doc = db.collection("weights").document(user_id).collection("records").document(date_str).get()
+        if doc.exists:
+            records.append({"date": date_str, "weight": doc.to_dict()["weight"], "days_ago": i})
+    return records
+
+def format_weight_reply(records):
+    if not records:
+        return "⚖️ まだ体重の記録がありません。\n「体重 68.5」のように送って記録してください！"
+    reply = "⚖️ 体重記録\n"
+    for r in records:
+        if r["days_ago"] == 0:
+            label = "今日"
+        elif r["days_ago"] == 1:
+            label = "昨日"
+        else:
+            label = f"{r['days_ago']}日前"
+        reply += f"\n{label}：{r['weight']} kg"
+    if len(records) >= 2:
+        latest = records[0]["weight"]
+        oldest = records[-1]["weight"]
+        diff = round(latest - oldest, 1)
+        days = records[-1]["days_ago"]
+        sign = "+" if diff > 0 else ""
+        reply += f"\n\n📈 {days}日間の変化：{sign}{diff} kg"
+    return reply
 
 def get_today_records_with_ids(user_id):
     now = datetime.now(JST)
@@ -234,10 +279,15 @@ def delete_last_record(user_id):
         return "削除できる記録がありません。"
 
 def get_today_records(user_id):
+    now = datetime.now(JST)
+    date_str = now.strftime("%Y-%m-%d")
     records, _ = get_today_records_with_ids(user_id)
-    if not records:
-        return "今日はまだ記録がありません。"
+    weight_doc = db.collection("weights").document(user_id).collection("records").document(date_str).get()
     reply = "📋 今日の記録\n"
+    if weight_doc.exists:
+        reply += f"\n⚖️ 体重：{weight_doc.to_dict()['weight']} kg"
+    if not records and not weight_doc.exists:
+        return "今日はまだ記録がありません。"
     for r in records:
         if r["type"] == "食事":
             reply += f"\n🍽 {r['name']}（{r['calories']} kcal）"
@@ -366,6 +416,23 @@ def callback():
                 except:
                     reply = show_delete_list(user_id)
 
+            elif user_text.startswith("体重"):
+                try:
+                    weight_str = user_text.replace("体重", "").strip()
+                    weight = float(weight_str)
+                    save_weight(user_id, weight)
+                    reply = f"⚖️ 体重を記録しました！\n{weight} kg\n\n「体重確認」で推移を確認できます！"
+                except:
+                    try:
+                        msg_type_classified = classify_message(user_text)
+                        if msg_type_classified == "体重確認":
+                            records = get_weight_history(user_id)
+                            reply = format_weight_reply(records)
+                        else:
+                            reply = "体重の記録：「体重 68.5」のように送ってください！\n体重の確認：「体重確認」と送ってください！"
+                    except:
+                        reply = "体重の記録：「体重 68.5」のように送ってください！"
+
             else:
                 try:
                     msg_type_classified = classify_message(user_text)
@@ -409,6 +476,10 @@ def callback():
 
                 elif msg_type_classified == "使い方":
                     reply = HELP_TEXT
+
+                elif msg_type_classified == "体重確認":
+                    records = get_weight_history(user_id)
+                    reply = format_weight_reply(records)
 
                 else:
                     reply = HELP_TEXT
