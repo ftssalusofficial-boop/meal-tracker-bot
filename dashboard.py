@@ -1,6 +1,5 @@
 from flask import request, render_template_string, redirect, session
 import os
-from firebase_admin import firestore
 from datetime import datetime, timezone, timedelta
 
 JST = timezone(timedelta(hours=9))
@@ -281,8 +280,7 @@ new Chart(document.getElementById('weightChart'), {
 </html>
 """
 
-def init_dashboard(app):
-    db = firestore.client()
+def init_dashboard(app, db):
     app.secret_key = os.environ.get("SECRET_KEY", "salus-secret-2024")
 
     def get_all_users(date_str, tab="active"):

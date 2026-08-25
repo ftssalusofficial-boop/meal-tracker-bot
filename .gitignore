@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+venv/
+venv_clean/
+__pycache__/
+*.pyc
+firebase-credentials*.json
+*.log
+.claude/

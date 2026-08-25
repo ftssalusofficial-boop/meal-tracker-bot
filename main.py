@@ -1,12 +1,15 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 from flask import Flask, request, session
 import os
 import json
 import requests
 import time
+import traceback
 from google import genai
 from google.genai import types
-import firebase_admin
-from firebase_admin import credentials, firestore
+import firestore_rest
 from datetime import datetime, timezone, timedelta
 
 app = Flask(__name__)
@@ -16,12 +19,10 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 FIREBASE_CREDENTIALS = os.environ.get("FIREBASE_CREDENTIALS")
 
 cred_dict = json.loads(FIREBASE_CREDENTIALS)
-cred = credentials.Certificate(cred_dict)
-firebase_admin.initialize_app(cred, {"projectId": cred_dict["project_id"]})
-db = firestore.client()
+db = firestore_rest.client(cred_dict)
 
 from dashboard import init_dashboard
-init_dashboard(app)
+init_dashboard(app, db)
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -257,10 +258,10 @@ def delete_last_record(user_id):
     date_str = now.strftime("%Y-%m-%d")
     last_meal = None
     last_exercise = None
-    meals = db.collection("meals").document(user_id).collection(date_str).order_by("timestamp", direction=firestore.Query.DESCENDING).limit(1).stream()
+    meals = db.collection("meals").document(user_id).collection(date_str).order_by("timestamp", direction=firestore_rest.Query.DESCENDING).limit(1).stream()
     for doc in meals:
         last_meal = (doc.id, doc.to_dict())
-    exercises = db.collection("exercises").document(user_id).collection(date_str).order_by("timestamp", direction=firestore.Query.DESCENDING).limit(1).stream()
+    exercises = db.collection("exercises").document(user_id).collection(date_str).order_by("timestamp", direction=firestore_rest.Query.DESCENDING).limit(1).stream()
     for doc in exercises:
         last_exercise = (doc.id, doc.to_dict())
     if last_meal and last_exercise:
@@ -388,7 +389,8 @@ def callback():
                 meal_data = json.loads(clean)
                 save_meal(user_id, meal_data)
                 reply = f"📸 {meal_data['dish']}\n\nカロリー：{meal_data['calories']} kcal\nタンパク質：{meal_data['protein']} g\n脂質：{meal_data['fat']} g\n炭水化物：{meal_data['carbs']} g\n\n✅ 記録しました！"
-            except:
+            except Exception:
+                traceback.print_exc()
                 reply = "写真から料理を認識できませんでした。もう一度試してください。"
             reply_message(reply_token, reply)
 
@@ -407,14 +409,16 @@ def callback():
                     if protein: reply += f"\nタンパク質：{protein} g"
                     if fat: reply += f"\n脂質：{fat} g"
                     if carbs: reply += f"\n炭水化物：{carbs} g"
-                except:
+                except Exception:
+                    traceback.print_exc()
                     reply = "目標設定の形式が正しくありません。\n例：目標設定 2000 150 50 250"
 
             elif user_text.startswith("削除 "):
                 try:
                     number = int(user_text.replace("削除", "").strip())
                     reply = delete_by_number(user_id, number)
-                except:
+                except Exception:
+                    traceback.print_exc()
                     reply = show_delete_list(user_id)
 
             elif user_text.startswith("体重"):
@@ -423,7 +427,7 @@ def callback():
                     weight = float(weight_str)
                     save_weight(user_id, weight)
                     reply = f"⚖️ 体重を記録しました！\n{weight} kg\n\n「体重確認」で推移を確認できます！"
-                except:
+                except Exception:
                     try:
                         msg_type_classified = classify_message(user_text)
                         if msg_type_classified == "体重確認":
@@ -431,13 +435,15 @@ def callback():
                             reply = format_weight_reply(records)
                         else:
                             reply = "体重の記録：「体重 68.5」のように送ってください！\n体重の確認：「体重確認」と送ってください！"
-                    except:
+                    except Exception:
+                        traceback.print_exc()
                         reply = "体重の記録：「体重 68.5」のように送ってください！"
 
             else:
                 try:
                     msg_type_classified = classify_message(user_text)
-                except:
+                except Exception:
+                    traceback.print_exc()
                     msg_type_classified = "その他"
 
                 if msg_type_classified == "合計確認":
@@ -453,7 +459,8 @@ def callback():
                         exercise_data = json.loads(clean)
                         save_exercise(user_id, exercise_data)
                         reply = f"🏃 {exercise_data['exercise']}\n\n消費カロリー：{exercise_data['burned_calories']} kcal\n\n✅ 記録しました！"
-                    except:
+                    except Exception:
+                        traceback.print_exc()
                         reply = "運動を認識できませんでした。もう一度試してください。"
 
                 elif msg_type_classified == "食事":
@@ -463,7 +470,8 @@ def callback():
                         meal_data = json.loads(clean)
                         save_meal(user_id, meal_data)
                         reply = f"🍽 {meal_data['dish']}\n\nカロリー：{meal_data['calories']} kcal\nタンパク質：{meal_data['protein']} g\n脂質：{meal_data['fat']} g\n炭水化物：{meal_data['carbs']} g\n\n✅ 記録しました！"
-                    except:
+                    except Exception:
+                        traceback.print_exc()
                         reply = "食事を認識できませんでした。料理名を入力してみてください。"
 
                 elif msg_type_classified == "記録一覧":

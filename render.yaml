@@ -1,4 +1,4 @@
-yamlservices:
+services:
   - type: web
     name: meal-tracker-bot
     env: python
@@ -7,5 +7,11 @@ yamlservices:
     envVars:
       - key: LINE_CHANNEL_ACCESS_TOKEN
         sync: false
-      - key: ANTHROPIC_API_KEY
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: FIREBASE_CREDENTIALS
+        sync: false
+      - key: DASHBOARD_PASSWORD
+        sync: false
+      - key: SECRET_KEY
         sync: false
