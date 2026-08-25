@@ -153,6 +153,7 @@ class FirestoreRestClient:
             scopes=["https://www.googleapis.com/auth/datastore", "https://www.googleapis.com/auth/cloud-platform"],
         )
         self._documents_base = f"{_BASE}/projects/{self._project_id}/databases/(default)/documents"
+        self._session = requests.Session()
 
     def collection(self, collection_id):
         return CollectionRef(self, [collection_id])
@@ -164,7 +165,7 @@ class FirestoreRestClient:
 
     def _request(self, method, url, **kwargs):
         for attempt in range(3):
-            resp = requests.request(method, url, headers=self._headers(), timeout=15, **kwargs)
+            resp = self._session.request(method, url, headers=self._headers(), timeout=15, **kwargs)
             if resp.status_code < 500:
                 return resp
             time.sleep(1)
