@@ -18,7 +18,7 @@ FIREBASE_CREDENTIALS = os.environ.get("FIREBASE_CREDENTIALS")
 cred_dict = json.loads(FIREBASE_CREDENTIALS)
 cred = credentials.Certificate(cred_dict)
 firebase_admin.initialize_app(cred)
-db = firestore.client(database_id="(default)")
+db = firestore.client()
 
 from dashboard import init_dashboard
 init_dashboard(app)
