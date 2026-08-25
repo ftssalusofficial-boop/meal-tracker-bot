@@ -1,5 +1,5 @@
 flask
 requests
 google-genai
-firebase-admin
+firebase-admin==6.5.0
 gunicorn
