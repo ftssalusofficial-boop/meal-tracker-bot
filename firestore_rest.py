@@ -242,6 +242,11 @@ class FirestoreRestClient:
         if limit:
             structured_query["limit"] = limit
         resp = self._request("POST", url, json={"structuredQuery": structured_query})
+        if resp.status_code == 404:
+            # A brand-new date's subcollection (e.g. right after midnight, before
+            # any document has ever been written to it) can 404 here even though
+            # it logically just has zero results -- treat it the same as empty.
+            return []
         resp.raise_for_status()
         results = []
         for item in resp.json():

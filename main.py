@@ -398,7 +398,10 @@ def callback():
 
         reply_token = event["replyToken"]
         user_id = event["source"]["userId"]
-        save_user_profile(user_id)
+        try:
+            save_user_profile(user_id)
+        except Exception:
+            traceback.print_exc()
         msg_type = event["message"]["type"]
 
         if msg_type == "image":
@@ -440,7 +443,11 @@ def callback():
                     reply = delete_by_number(user_id, number)
                 except Exception:
                     traceback.print_exc()
-                    reply = show_delete_list(user_id)
+                    try:
+                        reply = show_delete_list(user_id)
+                    except Exception:
+                        traceback.print_exc()
+                        reply = "削除できませんでした。もう一度試してください。"
 
             elif user_text.startswith("体重"):
                 try:
@@ -470,10 +477,14 @@ def callback():
                     analysis = {}
 
                 if msg_type_classified == "合計確認":
-                    total = get_daily_total(user_id)
-                    burned = get_daily_exercise_total(user_id)
-                    goal = get_goal(user_id)
-                    reply = format_total_reply(total, burned, goal)
+                    try:
+                        total = get_daily_total(user_id)
+                        burned = get_daily_exercise_total(user_id)
+                        goal = get_goal(user_id)
+                        reply = format_total_reply(total, burned, goal)
+                    except Exception:
+                        traceback.print_exc()
+                        reply = "合計を取得できませんでした。もう一度試してください。"
 
                 elif msg_type_classified == "運動":
                     try:
@@ -494,20 +505,36 @@ def callback():
                         reply = "食事を認識できませんでした。料理名を入力してみてください。"
 
                 elif msg_type_classified == "記録一覧":
-                    reply = get_today_records(user_id)
+                    try:
+                        reply = get_today_records(user_id)
+                    except Exception:
+                        traceback.print_exc()
+                        reply = "記録を取得できませんでした。もう一度試してください。"
 
                 elif msg_type_classified == "削除リスト":
-                    reply = show_delete_list(user_id)
+                    try:
+                        reply = show_delete_list(user_id)
+                    except Exception:
+                        traceback.print_exc()
+                        reply = "削除リストを取得できませんでした。もう一度試してください。"
 
                 elif msg_type_classified == "やり直し":
-                    reply = delete_last_record(user_id)
+                    try:
+                        reply = delete_last_record(user_id)
+                    except Exception:
+                        traceback.print_exc()
+                        reply = "削除できませんでした。もう一度試してください。"
 
                 elif msg_type_classified == "使い方":
                     reply = HELP_TEXT
 
                 elif msg_type_classified == "体重確認":
-                    records = get_weight_history(user_id)
-                    reply = format_weight_reply(records)
+                    try:
+                        records = get_weight_history(user_id)
+                        reply = format_weight_reply(records)
+                    except Exception:
+                        traceback.print_exc()
+                        reply = "体重の記録を取得できませんでした。もう一度試してください。"
 
                 else:
                     reply = HELP_TEXT
