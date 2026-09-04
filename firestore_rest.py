@@ -111,7 +111,7 @@ class DocumentRef(_RefBase):
         self._client._write_document(self._segments, data)
 
     def update(self, data):
-        self._client._write_document(self._segments, data)
+        self._client._update_document(self._segments, data)
 
     def delete(self):
         self._client._delete_document(self._segments)
@@ -181,9 +181,22 @@ class FirestoreRestClient:
         return DocSnapshot(segments[-1], _decode_fields(body.get("fields", {})), True)
 
     def _write_document(self, segments, data):
+        # Full replace, matching google-cloud-firestore's DocumentReference.set()
+        # (without merge=True): the document ends up containing exactly `data`.
         url = f"{self._documents_base}/{'/'.join(segments)}"
         body = {"fields": _encode_fields(data)}
         resp = self._request("PATCH", url, json=body)
+        resp.raise_for_status()
+
+    def _update_document(self, segments, data):
+        # Partial merge, matching google-cloud-firestore's DocumentReference.update():
+        # only the given fields are touched, everything else on the document is kept.
+        # Firestore's REST API requires an explicit updateMask for merge semantics --
+        # a PATCH with no updateMask replaces the whole document instead.
+        url = f"{self._documents_base}/{'/'.join(segments)}"
+        body = {"fields": _encode_fields(data)}
+        params = [("updateMask.fieldPaths", key) for key in data.keys()]
+        resp = self._request("PATCH", url, json=body, params=params)
         resp.raise_for_status()
 
     def _delete_document(self, segments):
