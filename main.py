@@ -63,7 +63,21 @@ HELP_TEXT = """📖 SALUS MEAL 使い方
 （カロリー タンパク質 脂質 炭水化物）
 ※文字を打つと正しく認識されなくなってしまいます！"""
 
-def reply_message(reply_token, text):
+def push_message(user_id, text):
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
+    }
+    data = {
+        "to": user_id,
+        "messages": [{"type": "text", "text": text}]
+    }
+    try:
+        requests.post("https://api.line.me/v2/bot/message/push", headers=headers, json=data, timeout=10)
+    except Exception:
+        traceback.print_exc()
+
+def reply_message(reply_token, user_id, text):
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
@@ -72,12 +86,33 @@ def reply_message(reply_token, text):
         "replyToken": reply_token,
         "messages": [{"type": "text", "text": text}]
     }
-    requests.post("https://api.line.me/v2/bot/message/reply", headers=headers, json=data)
+    try:
+        resp = requests.post("https://api.line.me/v2/bot/message/reply", headers=headers, json=data, timeout=10)
+        # A reply token expires a short while after the webhook fires (e.g. after
+        # a slow cold start + Gemini call). When that happens LINE returns a 4xx
+        # here instead of delivering the message, so fall back to a push message
+        # (keyed on user_id, not the token) rather than silently losing the reply.
+        if resp.status_code != 200:
+            push_message(user_id, text)
+    except Exception:
+        traceback.print_exc()
+        push_message(user_id, text)
+
+def start_loading_animation(user_id, seconds=60):
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
+    }
+    data = {"chatId": user_id, "loadingSeconds": seconds}
+    try:
+        requests.post("https://api.line.me/v2/bot/chat/loading/start", headers=headers, json=data, timeout=5)
+    except Exception:
+        traceback.print_exc()
 
 def get_line_image(message_id):
     url = f"https://api-data.line.me/v2/bot/message/{message_id}/content"
     headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, timeout=15)
     return response.content
 
 def save_user_profile(user_id):
@@ -390,7 +425,7 @@ def callback():
             save_user_profile(user_id)
             welcome = f"🎉 SALUS MEALへようこそ！\n\n{HELP_TEXT}"
             reply_token = event["replyToken"]
-            reply_message(reply_token, welcome)
+            reply_message(reply_token, user_id, welcome)
             continue
 
         if event["type"] != "message":
@@ -398,6 +433,10 @@ def callback():
 
         reply_token = event["replyToken"]
         user_id = event["source"]["userId"]
+        # Show LINE's "..." typing indicator right away so the user sees something
+        # is happening during a slow cold start / Gemini call, instead of nothing
+        # at all until the (possibly delayed) reply arrives.
+        start_loading_animation(user_id)
         try:
             save_user_profile(user_id)
         except Exception:
@@ -416,7 +455,7 @@ def callback():
             except Exception:
                 traceback.print_exc()
                 reply = "写真から料理を認識できませんでした。もう一度試してください。"
-            reply_message(reply_token, reply)
+            reply_message(reply_token, user_id, reply)
 
         elif msg_type == "text":
             user_text = event["message"]["text"]
@@ -539,10 +578,10 @@ def callback():
                 else:
                     reply = HELP_TEXT
 
-            reply_message(reply_token, reply)
+            reply_message(reply_token, user_id, reply)
 
         else:
-            reply_message(reply_token, "料理名か食事の写真を送ってください！")
+            reply_message(reply_token, user_id, "料理名か食事の写真を送ってください！")
     return "OK"
 
 if __name__ == "__main__":
