@@ -1,0 +1,65 @@
+name: Morning health check
+
+on:
+  schedule:
+    # 22:00 UTC = 07:00 JST
+    - cron: "0 22 * * *"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check bot health and notify via LINE
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          HEALTHCHECK_LINE_USER_ID: ${{ secrets.HEALTHCHECK_LINE_USER_ID }}
+        run: |
+          cat <<'PYEOF' > check.py
+          import json
+          import os
+          import urllib.request
+          import urllib.error
+
+          HEALTH_URL = "https://meal-tracker-bot-yzd1.onrender.com/health"
+          LINE_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
+          TO_USER = os.environ["HEALTHCHECK_LINE_USER_ID"]
+
+          try:
+              with urllib.request.urlopen(HEALTH_URL, timeout=90) as resp:
+                  status = resp.status
+                  body = resp.read().decode()
+          except urllib.error.HTTPError as e:
+              status = e.code
+              body = e.read().decode()
+          except Exception as e:
+              status = None
+              body = str(e)
+
+          if status == 200:
+              text = f"✅ SALUS MEAL bot：今朝の自動チェックは正常でした。\n{body}"
+          else:
+              text = (
+                  f"⚠️ SALUS MEAL bot：異常を検知しました(HTTP {status})。\n"
+                  f"返信が来ない状態になっている可能性があります。\n{body}"
+              )
+
+          req = urllib.request.Request(
+              "https://api.line.me/v2/bot/message/push",
+              data=json.dumps({
+                  "to": TO_USER,
+                  "messages": [{"type": "text", "text": text[:2000]}],
+              }).encode(),
+              headers={
+                  "Content-Type": "application/json",
+                  "Authorization": f"Bearer {LINE_TOKEN}",
+              },
+              method="POST",
+          )
+          with urllib.request.urlopen(req, timeout=15) as push_resp:
+              print("LINE push status:", push_resp.status)
+
+          if status != 200:
+              raise SystemExit(1)
+          PYEOF
+          python3 check.py

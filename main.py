@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from flask import Flask, request, session
+from flask import Flask, request, session, jsonify
 import os
 import json
 import requests
@@ -583,6 +583,37 @@ def callback():
         else:
             reply_message(reply_token, user_id, "料理名か食事の写真を送ってください！")
     return "OK"
+
+@app.route("/health")
+def health():
+    """Exercises the exact paths a real user message depends on (Firestore
+    read/write and Gemini) so a scheduled check can catch a broken bot before
+    a user notices the silence, instead of just confirming the process is up."""
+    checks = {}
+    ok = True
+
+    try:
+        now = datetime.now(JST)
+        ref = db.collection("system").document("healthcheck")
+        ref.set({"checked_at": now.isoformat()})
+        doc = ref.get()
+        checks["firestore"] = doc.exists and doc.to_dict().get("checked_at") == now.isoformat()
+    except Exception as e:
+        checks["firestore"] = False
+        checks["firestore_error"] = str(e)
+    if not checks["firestore"]:
+        ok = False
+
+    try:
+        result = gemini_generate("これはヘルスチェックです。「OK」とだけ返してください。")
+        checks["gemini"] = bool(result and result.strip())
+    except Exception as e:
+        checks["gemini"] = False
+        checks["gemini_error"] = str(e)
+    if not checks["gemini"]:
+        ok = False
+
+    return jsonify({"ok": ok, "checks": checks}), 200 if ok else 503
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
