@@ -138,17 +138,38 @@ JSONのみで返してください。例：{{"type":"食事"}}
     data = json.loads(clean)
     return data.get("type", "その他")
 
-def analyze_food_text(text):
-    prompt = f"「{text}」の栄養素を教えてください。カロリー、タンパク質、脂質、炭水化物をJSON形式のみで返してください。他の文章は不要です。例：{{\"dish\":\"料理名\",\"calories\":500,\"protein\":20,\"fat\":15,\"carbs\":60}}"
-    return gemini_generate(prompt)
+def classify_and_analyze(text):
+    prompt = f"""以下のメッセージが「食事」「運動」「合計確認」「目標設定」「記録一覧」「削除リスト」「やり直し」「使い方」「体重記録」「体重確認」「その他」のどれかを判定してください。
+
+判定ルール：
+- 料理名、食べ物、飲み物 → 食事
+- 歩いた、走った、泳いだ、歩数、ジョギング、ウォーキング、筋トレ、スクワット、ベンチプレス、腕立て、腹筋、種目名、運動、トレーニング → 運動
+- 今日の合計、合計 → 合計確認
+- 目標設定 → 目標設定
+- 今日の記録、記録一覧、記録を見る → 記録一覧
+- 削除、削除したい、消したい → 削除リスト
+- やり直し、取り消し、間違えた → やり直し
+- 使い方、ヘルプ、help → 使い方
+- 「体重 68.5」「体重68」など体重と数字 → 体重記録
+- 体重確認、体重推移、体重みたい → 体重確認
+- それ以外 → その他
+
+判定結果が「食事」の場合は、料理名とカロリー、タンパク質、脂質、炭水化物も含めてください。
+判定結果が「運動」の場合は、運動名と消費カロリーも含めてください（歩数の場合は距離と消費カロリーを計算）。
+
+必ずJSON形式のみで回答してください。他の文章は不要です。
+「食事」の例：{{"type":"食事","dish":"料理名","calories":500,"protein":20,"fat":15,"carbs":60}}
+「運動」の例：{{"type":"運動","exercise":"ウォーキング30分","burned_calories":120}}
+それ以外の例：{{"type":"合計確認"}}
+
+メッセージ：「{text}」"""
+    result = gemini_generate(prompt)
+    clean = result.strip().replace("```json", "").replace("```", "").strip()
+    return json.loads(clean)
 
 def analyze_food_image(image_bytes):
     prompt = "この食事の写真を見て、料理名とカロリー、タンパク質、脂質、炭水化物をJSON形式のみで返してください。他の文章は不要です。例：{\"dish\":\"料理名\",\"calories\":500,\"protein\":20,\"fat\":15,\"carbs\":60}"
     return gemini_generate(prompt, image_bytes)
-
-def analyze_exercise(text):
-    prompt = f"「{text}」の消費カロリーを教えてください。運動名と消費カロリーをJSON形式のみで返してください。歩数の場合は距離と消費カロリーを計算してください。他の文章は不要です。例：{{\"exercise\":\"ウォーキング30分\",\"burned_calories\":120}}"
-    return gemini_generate(prompt)
 
 def save_meal(user_id, meal_data):
     now = datetime.now(JST)
@@ -441,10 +462,12 @@ def callback():
 
             else:
                 try:
-                    msg_type_classified = classify_message(user_text)
+                    analysis = classify_and_analyze(user_text)
+                    msg_type_classified = analysis.get("type", "その他")
                 except Exception:
                     traceback.print_exc()
                     msg_type_classified = "その他"
+                    analysis = {}
 
                 if msg_type_classified == "合計確認":
                     total = get_daily_total(user_id)
@@ -454,9 +477,7 @@ def callback():
 
                 elif msg_type_classified == "運動":
                     try:
-                        result = analyze_exercise(user_text)
-                        clean = result.strip().replace("```json", "").replace("```", "").strip()
-                        exercise_data = json.loads(clean)
+                        exercise_data = {"exercise": analysis["exercise"], "burned_calories": analysis["burned_calories"]}
                         save_exercise(user_id, exercise_data)
                         reply = f"🏃 {exercise_data['exercise']}\n\n消費カロリー：{exercise_data['burned_calories']} kcal\n\n✅ 記録しました！"
                     except Exception:
@@ -465,9 +486,7 @@ def callback():
 
                 elif msg_type_classified == "食事":
                     try:
-                        result = analyze_food_text(user_text)
-                        clean = result.strip().replace("```json", "").replace("```", "").strip()
-                        meal_data = json.loads(clean)
+                        meal_data = {"dish": analysis["dish"], "calories": analysis["calories"], "protein": analysis["protein"], "fat": analysis["fat"], "carbs": analysis["carbs"]}
                         save_meal(user_id, meal_data)
                         reply = f"🍽 {meal_data['dish']}\n\nカロリー：{meal_data['calories']} kcal\nタンパク質：{meal_data['protein']} g\n脂質：{meal_data['fat']} g\n炭水化物：{meal_data['carbs']} g\n\n✅ 記録しました！"
                     except Exception:

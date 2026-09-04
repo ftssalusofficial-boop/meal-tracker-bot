@@ -1,0 +1,13 @@
+name: Keep Render service awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping production dashboard login page
+        run: curl -sf -o /dev/null https://meal-tracker-bot-yzd1.onrender.com/dashboard/login
