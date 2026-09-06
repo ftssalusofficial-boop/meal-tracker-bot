@@ -33,7 +33,8 @@
     "G_トレーニング接続系": {"used_count": 0, "note": "未開拓。差別化のため優先"},
     "H_Q&A系": {"used_count": 0, "note": "未開拓。優先"}
   },
-  "generation_rule": "次の記事は、priority_unusedの入口キーワードから1つ選び、使用回数が少ない/未使用のフォーマット（優先: G, H, A, D, E, F。C, Bは控えめに）を1つ組み合わせる。直近3本と同じキーワード×フォーマットの組み合わせを使わない。全記事、自律神経の視点に接続すること（business_profile.jsonのブランド軸）。エビデンス方針はcontent_strategy.md §7に従う。",
+  "generation_rule": "月次バッチで1回につき6本（デフォルト）をまとめて生成する。各記事は、priority_unusedの入口キーワードから1つ選び、使用回数が少ない/未使用のフォーマット（優先: G, H, A, D, E, F。C, Bは控えめに）を1つ組み合わせる。直近3本およびバッチ内の他記事と同じキーワード×フォーマットの組み合わせを使わない。全記事、自律神経の視点に接続すること（business_profile.jsonのブランド軸）。エビデンス方針（WebSearchでの裏取り、fabrication禁止）はcontent_strategy.md §7とGENERATE_DRAFT.mdに従う。",
+  "batch_size_default": 6,
   "used_topics": [
     {
       "title": "体のどこを緩めると自律神経は整いやすいのか｜首肩・顎・骨盤の3タイプで考える",
