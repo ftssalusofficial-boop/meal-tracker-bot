@@ -6,7 +6,7 @@
     "自律神経・睡眠・疲労系",
     "施術家コラム・信頼構築系"
   ],
-  "next_pillar_index": 0,
+  "next_pillar_index": 1,
   "rotation_note": "直近8本が全て『自律神経・睡眠・疲労系』に偏っていたため、次回はindex 0（整体・体の悩み系）から開始し、以後ローテーションで分散させる。",
   "topic_pool": {
     "整体・体の悩み系（入口SEO）": [
@@ -37,7 +37,13 @@
       "施術者目線で見る、SNSの健康情報との付き合い方"
     ]
   },
-  "used_topics": [],
-  "last_generated": null,
-  "generation_count": 0
+  "used_topics": [
+    {
+      "topic": "猫背は整体で本当に治るのか｜姿勢矯正の限界と現実的な向き合い方",
+      "pillar": "整体・体の悩み系（入口SEO）",
+      "date": "2026-09-06"
+    }
+  ],
+  "last_generated": "2026-09-06",
+  "generation_count": 1
 }
