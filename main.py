@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from flask import Flask, request, session
+from flask import Flask, request, session, jsonify
 import os
 import json
 import requests
@@ -63,7 +63,21 @@ HELP_TEXT = """📖 SALUS MEAL 使い方
 （カロリー タンパク質 脂質 炭水化物）
 ※文字を打つと正しく認識されなくなってしまいます！"""
 
-def reply_message(reply_token, text):
+def push_message(user_id, text):
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
+    }
+    data = {
+        "to": user_id,
+        "messages": [{"type": "text", "text": text}]
+    }
+    try:
+        requests.post("https://api.line.me/v2/bot/message/push", headers=headers, json=data, timeout=10)
+    except Exception:
+        traceback.print_exc()
+
+def reply_message(reply_token, user_id, text):
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
@@ -72,12 +86,33 @@ def reply_message(reply_token, text):
         "replyToken": reply_token,
         "messages": [{"type": "text", "text": text}]
     }
-    requests.post("https://api.line.me/v2/bot/message/reply", headers=headers, json=data)
+    try:
+        resp = requests.post("https://api.line.me/v2/bot/message/reply", headers=headers, json=data, timeout=10)
+        # A reply token expires a short while after the webhook fires (e.g. after
+        # a slow cold start + Gemini call). When that happens LINE returns a 4xx
+        # here instead of delivering the message, so fall back to a push message
+        # (keyed on user_id, not the token) rather than silently losing the reply.
+        if resp.status_code != 200:
+            push_message(user_id, text)
+    except Exception:
+        traceback.print_exc()
+        push_message(user_id, text)
+
+def start_loading_animation(user_id, seconds=60):
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
+    }
+    data = {"chatId": user_id, "loadingSeconds": seconds}
+    try:
+        requests.post("https://api.line.me/v2/bot/chat/loading/start", headers=headers, json=data, timeout=5)
+    except Exception:
+        traceback.print_exc()
 
 def get_line_image(message_id):
     url = f"https://api-data.line.me/v2/bot/message/{message_id}/content"
     headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, timeout=15)
     return response.content
 
 def save_user_profile(user_id):
@@ -390,7 +425,7 @@ def callback():
             save_user_profile(user_id)
             welcome = f"🎉 SALUS MEALへようこそ！\n\n{HELP_TEXT}"
             reply_token = event["replyToken"]
-            reply_message(reply_token, welcome)
+            reply_message(reply_token, user_id, welcome)
             continue
 
         if event["type"] != "message":
@@ -398,7 +433,14 @@ def callback():
 
         reply_token = event["replyToken"]
         user_id = event["source"]["userId"]
-        save_user_profile(user_id)
+        # Show LINE's "..." typing indicator right away so the user sees something
+        # is happening during a slow cold start / Gemini call, instead of nothing
+        # at all until the (possibly delayed) reply arrives.
+        start_loading_animation(user_id)
+        try:
+            save_user_profile(user_id)
+        except Exception:
+            traceback.print_exc()
         msg_type = event["message"]["type"]
 
         if msg_type == "image":
@@ -413,7 +455,7 @@ def callback():
             except Exception:
                 traceback.print_exc()
                 reply = "写真から料理を認識できませんでした。もう一度試してください。"
-            reply_message(reply_token, reply)
+            reply_message(reply_token, user_id, reply)
 
         elif msg_type == "text":
             user_text = event["message"]["text"]
@@ -440,7 +482,11 @@ def callback():
                     reply = delete_by_number(user_id, number)
                 except Exception:
                     traceback.print_exc()
-                    reply = show_delete_list(user_id)
+                    try:
+                        reply = show_delete_list(user_id)
+                    except Exception:
+                        traceback.print_exc()
+                        reply = "削除できませんでした。もう一度試してください。"
 
             elif user_text.startswith("体重"):
                 try:
@@ -470,10 +516,14 @@ def callback():
                     analysis = {}
 
                 if msg_type_classified == "合計確認":
-                    total = get_daily_total(user_id)
-                    burned = get_daily_exercise_total(user_id)
-                    goal = get_goal(user_id)
-                    reply = format_total_reply(total, burned, goal)
+                    try:
+                        total = get_daily_total(user_id)
+                        burned = get_daily_exercise_total(user_id)
+                        goal = get_goal(user_id)
+                        reply = format_total_reply(total, burned, goal)
+                    except Exception:
+                        traceback.print_exc()
+                        reply = "合計を取得できませんでした。もう一度試してください。"
 
                 elif msg_type_classified == "運動":
                     try:
@@ -494,29 +544,76 @@ def callback():
                         reply = "食事を認識できませんでした。料理名を入力してみてください。"
 
                 elif msg_type_classified == "記録一覧":
-                    reply = get_today_records(user_id)
+                    try:
+                        reply = get_today_records(user_id)
+                    except Exception:
+                        traceback.print_exc()
+                        reply = "記録を取得できませんでした。もう一度試してください。"
 
                 elif msg_type_classified == "削除リスト":
-                    reply = show_delete_list(user_id)
+                    try:
+                        reply = show_delete_list(user_id)
+                    except Exception:
+                        traceback.print_exc()
+                        reply = "削除リストを取得できませんでした。もう一度試してください。"
 
                 elif msg_type_classified == "やり直し":
-                    reply = delete_last_record(user_id)
+                    try:
+                        reply = delete_last_record(user_id)
+                    except Exception:
+                        traceback.print_exc()
+                        reply = "削除できませんでした。もう一度試してください。"
 
                 elif msg_type_classified == "使い方":
                     reply = HELP_TEXT
 
                 elif msg_type_classified == "体重確認":
-                    records = get_weight_history(user_id)
-                    reply = format_weight_reply(records)
+                    try:
+                        records = get_weight_history(user_id)
+                        reply = format_weight_reply(records)
+                    except Exception:
+                        traceback.print_exc()
+                        reply = "体重の記録を取得できませんでした。もう一度試してください。"
 
                 else:
                     reply = HELP_TEXT
 
-            reply_message(reply_token, reply)
+            reply_message(reply_token, user_id, reply)
 
         else:
-            reply_message(reply_token, "料理名か食事の写真を送ってください！")
+            reply_message(reply_token, user_id, "料理名か食事の写真を送ってください！")
     return "OK"
+
+@app.route("/health")
+def health():
+    """Exercises the exact paths a real user message depends on (Firestore
+    read/write and Gemini) so a scheduled check can catch a broken bot before
+    a user notices the silence, instead of just confirming the process is up."""
+    checks = {}
+    ok = True
+
+    try:
+        now = datetime.now(JST)
+        ref = db.collection("system").document("healthcheck")
+        ref.set({"checked_at": now.isoformat()})
+        doc = ref.get()
+        checks["firestore"] = doc.exists and doc.to_dict().get("checked_at") == now.isoformat()
+    except Exception as e:
+        checks["firestore"] = False
+        checks["firestore_error"] = str(e)
+    if not checks["firestore"]:
+        ok = False
+
+    try:
+        result = gemini_generate("これはヘルスチェックです。「OK」とだけ返してください。")
+        checks["gemini"] = bool(result and result.strip())
+    except Exception as e:
+        checks["gemini"] = False
+        checks["gemini_error"] = str(e)
+    if not checks["gemini"]:
+        ok = False
+
+    return jsonify({"ok": ok, "checks": checks}), 200 if ok else 503
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
