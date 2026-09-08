@@ -31,7 +31,8 @@
     "E_実践ハウツー系": {"used_count": 2},
     "F_現場エピソード系": {"used_count": 2},
     "G_トレーニング接続系": {"used_count": 1},
-    "H_Q&A系": {"used_count": 1}
+    "H_Q&A系": {"used_count": 1},
+    "I_辞典系（習慣百科スタイル）": {"used_count": 1, "note": "2026-09-08追加。書籍『科学的に証明されたすごい習慣大百科』の構成を参考にした新フォーマット"}
   },
   "generation_rule": "月次バッチで1回につき6本（デフォルト）をまとめて生成する。各記事は、priority_unusedの入口キーワードから1つ選び、使用回数が少ない/未使用のフォーマット（優先: G, H, A, D, E, F。C, Bは控えめに）を1つ組み合わせる。直近3本およびバッチ内の他記事と同じキーワード×フォーマットの組み合わせを使わない。全記事、自律神経の視点に接続すること（business_profile.jsonのブランド軸）。エビデンス方針（WebSearchでの裏取り、fabrication禁止）はcontent_strategy.md §7とGENERATE_DRAFT.mdに従う。",
   "batch_size_default": 6,
@@ -140,8 +141,15 @@
       "format": "F_現場エピソード系",
       "date": "2026-09-06",
       "source": "自動生成（月次バッチ）"
+    },
+    {
+      "title": "冷えを根本から見直す、科学的根拠つきの習慣4選",
+      "keyword": "冷え",
+      "format": "I_辞典系（習慣百科スタイル）",
+      "date": "2026-09-08",
+      "source": "手動作成（書籍参考フォーマットの試作。同キーワードのH_Q&A版と並行して残す）"
     }
   ],
-  "last_generated": "2026-09-06",
-  "generation_count": 7
+  "last_generated": "2026-09-08",
+  "generation_count": 8
 }
