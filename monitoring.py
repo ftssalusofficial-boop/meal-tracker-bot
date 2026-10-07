@@ -104,3 +104,152 @@ class Monitor:
         except Exception:
             traceback.print_exc()
         return True
+
+    def _load_canary(self):
+        doc = self.db.collection("system").document("canary").get()
+        return doc.to_dict() if doc.exists else {}
+
+    def _load_canary_cached(self):
+        now = self._now()
+        if self._cache and (now - self._cache[0]).total_seconds() < STATUS_CACHE_SEC:
+            return self._cache[1]
+        try:
+            data = self._load_canary()
+        except Exception:
+            traceback.print_exc()
+            data = self._cache[1] if self._cache else {}
+        self._cache = (now, data)
+        return data
+
+    def _check_line_webhook(self):
+        try:
+            expected = self.public_base_url + "/callback"
+            r = self.http.get(f"{LINE_API}/v2/bot/channel/webhook/endpoint", headers=self._headers(), timeout=10)
+            if r.status_code != 200:
+                return f"fail: endpoint api {r.status_code}"
+            info = r.json()
+            if not info.get("active"):
+                return "fail: webhook inactive"
+            if info.get("endpoint") != expected:
+                return f"fail: endpoint is {info.get('endpoint')}"
+            t = self.http.post(f"{LINE_API}/v2/bot/channel/webhook/test", headers=self._headers(),
+                               json={"endpoint": expected}, timeout=30)
+            body = t.json()
+            if t.status_code != 200 or not body.get("success") or body.get("statusCode") != 200:
+                return f"fail: webhook test {body.get('statusCode')} {body.get('reason')}"
+            return "ok"
+        except Exception as e:
+            traceback.print_exc()
+            return f"fail: {type(e).__name__}"
+
+    def _check_reply_api(self):
+        try:
+            r = self.http.post(f"{LINE_API}/v2/bot/message/validate/reply", headers=self._headers(),
+                               json={"messages": [{"type": "text", "text": "canary"}]}, timeout=10)
+            if r.status_code == 200:
+                return "ok"
+            if r.status_code in (404, 405):
+                return "skipped"
+            return f"fail: validate {r.status_code}"
+        except Exception as e:
+            traceback.print_exc()
+            return f"fail: {type(e).__name__}"
+
+    def _check_gemini(self):
+        try:
+            data = self.classify_fn("ラーメン")
+            calories = data.get("calories")
+            if data.get("type") != "食事" or isinstance(calories, bool) or not isinstance(calories, (int, float)):
+                return f"fail: unexpected result {str(data)[:80]}"
+            return "ok"
+        except Exception as e:
+            traceback.print_exc()
+            return f"fail: {type(e).__name__}"
+
+    def _check_firestore(self):
+        try:
+            now = self._now().isoformat()
+            ref = self.db.collection("system").document("canary_probe")
+            ref.set({"ts": now})
+            return "ok" if ref.get().to_dict().get("ts") == now else "fail: read-back mismatch"
+        except Exception as e:
+            return f"fail: {type(e).__name__}"
+
+    def _gemini_due(self, prev, now):
+        checked = _parse(prev.get("gemini_checked_at"))
+        if checked is None or (prev.get("checks") or {}).get("gemini") != "ok":
+            return True
+        return (now - checked) >= timedelta(minutes=GEMINI_CHECK_INTERVAL_MIN)
+
+    def _alert_canary_failure(self, failures, checks):
+        bad = ", ".join(f"{k}: {v}" for k, v in checks.items() if v not in ("ok", "skipped"))
+        self.alert_staff("canary_failure", f"⚠️ SALUS MEAL 自動テストが{failures}回連続で失敗しています。\n{bad}")
+
+    def run_canary(self):
+        now = self._now()
+        try:
+            prev = self._load_canary()
+        except Exception:
+            traceback.print_exc()
+            prev = {}
+        checks = {
+            "line_webhook": self._check_line_webhook(),
+            "line_reply_api": self._check_reply_api(),
+        }
+        if self._gemini_due(prev, now):
+            checks["gemini"] = self._check_gemini()
+            gemini_checked_at = now.isoformat()
+        else:
+            checks["gemini"] = (prev.get("checks") or {}).get("gemini", "ok")
+            gemini_checked_at = prev.get("gemini_checked_at")
+        checks["firestore"] = self._check_firestore()
+        ok = all(v in ("ok", "skipped") for v in checks.values())
+        failures = 0 if ok else int(prev.get("consecutive_failures") or 0) + 1
+        result = {
+            "ran_at": now.isoformat(),
+            "ok": ok,
+            "checks": checks,
+            "gemini_checked_at": gemini_checked_at,
+            "consecutive_failures": failures,
+            "last_ok_at": now.isoformat() if ok else prev.get("last_ok_at"),
+        }
+        try:
+            self.db.collection("system").document("canary").set(result)
+        except Exception:
+            traceback.print_exc()
+        self._cache = (now, result)
+        self._ran_this_process = True
+        if failures >= 2:
+            self._alert_canary_failure(failures, checks)
+        return result
+
+    def _record_canary_crash(self, exc):
+        try:
+            now = self._now()
+            prev = self._load_canary()
+            failures = int(prev.get("consecutive_failures") or 0) + 1
+            checks = {"canary": f"fail: {type(exc).__name__}"}
+            result = {
+                "ran_at": now.isoformat(),
+                "ok": False,
+                "checks": checks,
+                "gemini_checked_at": prev.get("gemini_checked_at"),
+                "consecutive_failures": failures,
+                "last_ok_at": prev.get("last_ok_at"),
+            }
+            self.db.collection("system").document("canary").set(result)
+            self._cache = (now, result)
+            if failures >= 2:
+                self._alert_canary_failure(failures, checks)
+        except Exception:
+            traceback.print_exc()
+
+    def _run_canary_guarded(self):
+        try:
+            self.run_canary()
+        except Exception as e:
+            traceback.print_exc()
+            self._record_canary_crash(e)
+        finally:
+            with self._lock:
+                self._canary_running = False
