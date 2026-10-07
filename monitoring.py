@@ -253,3 +253,48 @@ class Monitor:
         finally:
             with self._lock:
                 self._canary_running = False
+
+    def _maybe_start_canary(self, canary, now):
+        ran_at = _parse(canary.get("ran_at"))
+        if ran_at is not None and (now - ran_at) < timedelta(minutes=CANARY_INTERVAL_MIN):
+            return
+        with self._lock:
+            if self._canary_running:
+                return
+            self._canary_running = True
+        self._spawn(self._run_canary_guarded)
+
+    def get_status(self, detail=False):
+        now = self._now()
+        canary = self._load_canary_cached()
+        ran_at = _parse(canary.get("ran_at"))
+        age_min = None if ran_at is None else (now - ran_at).total_seconds() / 60
+        canary_ok = None if ran_at is None else bool(canary.get("ok"))
+        warming = (now - self._started_at) < timedelta(minutes=WARMUP_MIN) and not self._ran_this_process
+        if canary_ok and age_min <= STATUS_OK_MAX_AGE_MIN:
+            state = "ok"
+        elif warming:
+            state = "warming_up"
+        elif canary_ok is None:
+            state = "no_data"
+        elif not canary_ok:
+            state = "failing"
+        else:
+            state = "stale"
+        payload = {
+            "state": state,
+            "ok": state in ("ok", "warming_up"),
+            "canary_ok": canary_ok,
+            "canary_age_min": None if age_min is None else round(age_min, 1),
+            "last_ok_at": canary.get("last_ok_at"),
+            "alerts_configured": bool(self.alert_user_id),
+            "checks": canary.get("checks"),
+        }
+        if detail:
+            try:
+                payload["yesterday"] = self.yesterday_summary()
+            except Exception:
+                traceback.print_exc()
+                payload["yesterday"] = None
+        self._maybe_start_canary(canary, now)
+        return payload, (200 if payload["ok"] else 503)
