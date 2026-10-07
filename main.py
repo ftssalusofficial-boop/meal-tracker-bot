@@ -196,21 +196,51 @@ def classify_and_analyze(text, attempts=3):
 判定結果が「食事」の場合は、料理名とカロリー、タンパク質、脂質、炭水化物も含めてください。
 判定結果が「運動」の場合は、運動名と消費カロリーも含めてください（歩数の場合は距離と消費カロリーを計算）。
 
+数値は必ず推定して数値で返してください。null・空欄・文字列は使わないでください。
 必ずJSON形式のみで回答してください。他の文章は不要です。
 「食事」の例：{{"type":"食事","dish":"料理名","calories":500,"protein":20,"fat":15,"carbs":60}}
 「運動」の例：{{"type":"運動","exercise":"ウォーキング30分","burned_calories":120}}
 それ以外の例：{{"type":"合計確認"}}
 
 メッセージ：「{text}」"""
-    result = gemini_generate(prompt, attempts=attempts)
-    clean = result.strip().replace("```json", "").replace("```", "").strip()
-    return json.loads(clean)
+    error = None
+    for i in range(attempts):
+        try:
+            result = gemini_generate(prompt, attempts=1)
+            clean = result.strip().replace("```json", "").replace("```", "").strip()
+            data = json.loads(clean)
+            if _analysis_is_valid(data):
+                return data
+            error = ValueError("analysis is missing required numeric fields")
+        except Exception as e:
+            error = e
+        if i < attempts - 1:
+            time.sleep(2)
+    raise error
+
+def _is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+def _analysis_is_valid(data):
+    if not isinstance(data, dict) or not isinstance(data.get("type"), str):
+        return False
+    if data["type"] == "食事":
+        return isinstance(data.get("dish"), str) and all(_is_number(data.get(k)) for k in ("calories", "protein", "fat", "carbs"))
+    if data["type"] == "運動":
+        return isinstance(data.get("exercise"), str) and _is_number(data.get("burned_calories"))
+    return True
+
+def _require_numbers(data, keys):
+    for key in keys:
+        if not _is_number(data.get(key)):
+            raise ValueError(f"missing numeric field: {key}")
 
 def analyze_food_image(image_bytes):
     prompt = "この食事の写真を見て、料理名とカロリー、タンパク質、脂質、炭水化物をJSON形式のみで返してください。他の文章は不要です。例：{\"dish\":\"料理名\",\"calories\":500,\"protein\":20,\"fat\":15,\"carbs\":60}"
     return gemini_generate(prompt, image_bytes)
 
 def save_meal(user_id, meal_data):
+    _require_numbers(meal_data, ("calories", "protein", "fat", "carbs"))
     now = datetime.now(JST)
     date_str = now.strftime("%Y-%m-%d")
     doc_ref = db.collection("meals").document(user_id).collection(date_str).document()
@@ -224,6 +254,7 @@ def save_meal(user_id, meal_data):
     })
 
 def save_exercise(user_id, exercise_data):
+    _require_numbers(exercise_data, ("burned_calories",))
     now = datetime.now(JST)
     date_str = now.strftime("%Y-%m-%d")
     doc_ref = db.collection("exercises").document(user_id).collection(date_str).document()
@@ -364,10 +395,10 @@ def get_daily_total(user_id):
     total = {"calories": 0, "protein": 0, "fat": 0, "carbs": 0}
     for doc in docs:
         d = doc.to_dict()
-        total["calories"] += d.get("calories", 0)
-        total["protein"] += d.get("protein", 0)
-        total["fat"] += d.get("fat", 0)
-        total["carbs"] += d.get("carbs", 0)
+        total["calories"] += d.get("calories") or 0
+        total["protein"] += d.get("protein") or 0
+        total["fat"] += d.get("fat") or 0
+        total["carbs"] += d.get("carbs") or 0
     return total
 
 def get_daily_exercise_total(user_id):
@@ -377,7 +408,7 @@ def get_daily_exercise_total(user_id):
     burned = 0
     for doc in docs:
         d = doc.to_dict()
-        burned += d.get("burned_calories", 0)
+        burned += d.get("burned_calories") or 0
     return burned
 
 def set_goal(user_id, calories, protein=None, fat=None, carbs=None):

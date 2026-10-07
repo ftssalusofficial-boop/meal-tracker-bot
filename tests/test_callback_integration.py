@@ -188,6 +188,89 @@ def test_canary_gemini_check_uses_a_single_attempt(env, monkeypatch):
     assert seen == [1]
 
 
+VALID_MEAL = '{"type":"食事","dish":"ラーメン","calories":500,"protein":20,"fat":15,"carbs":60}'
+NULL_MEAL = '{"type":"食事","dish":"ラーメン","calories":null,"protein":null,"fat":null,"carbs":null}'
+
+
+def fake_gemini(responses, calls):
+    def fake(prompt, image_bytes=None, attempts=3):
+        calls.append(attempts)
+        item = responses[min(len(calls) - 1, len(responses) - 1)]
+        if isinstance(item, Exception):
+            raise item
+        return item
+    return fake
+
+
+def test_analysis_with_null_numbers_is_retried(env, monkeypatch):
+    main, db, install = env
+    calls = []
+    monkeypatch.setattr(main, "gemini_generate", fake_gemini([NULL_MEAL, VALID_MEAL], calls))
+    monkeypatch.setattr(main.time, "sleep", lambda s: None)
+    data = main.classify_and_analyze("ラーメン")
+    assert data["calories"] == 500 and len(calls) == 2
+
+
+def test_analysis_with_null_numbers_raises_after_all_attempts(env, monkeypatch):
+    main, db, install = env
+    calls = []
+    monkeypatch.setattr(main, "gemini_generate", fake_gemini([NULL_MEAL], calls))
+    monkeypatch.setattr(main.time, "sleep", lambda s: None)
+    with pytest.raises(ValueError):
+        main.classify_and_analyze("ラーメン", attempts=2)
+    assert len(calls) == 2
+
+
+def test_exercise_with_null_calories_is_retried_and_api_errors_too(env, monkeypatch):
+    main, db, install = env
+    calls = []
+    bad = '{"type":"運動","exercise":"ウォーキング","burned_calories":null}'
+    good = '{"type":"運動","exercise":"ウォーキング","burned_calories":120}'
+    monkeypatch.setattr(main, "gemini_generate", fake_gemini([RuntimeError("api"), bad, good], calls))
+    monkeypatch.setattr(main.time, "sleep", lambda s: None)
+    assert main.classify_and_analyze("ウォーキング")["burned_calories"] == 120
+    assert len(calls) == 3
+
+
+def test_non_meal_types_need_no_numbers(env, monkeypatch):
+    main, db, install = env
+    calls = []
+    monkeypatch.setattr(main, "gemini_generate", fake_gemini(['{"type":"合計確認"}'], calls))
+    assert main.classify_and_analyze("今日の合計") == {"type": "合計確認"}
+    assert len(calls) == 1
+
+
+def test_save_meal_rejects_missing_numbers_and_writes_nothing(env):
+    main, db, install = env
+    with pytest.raises(ValueError):
+        main.save_meal("Uuser1", {"dish": "x", "calories": 1200, "protein": None, "fat": None, "carbs": None})
+    with pytest.raises(ValueError):
+        main.save_exercise("Uuser1", {"exercise": "x", "burned_calories": None})
+    assert db.docs == {}
+
+
+def test_daily_totals_tolerate_stored_nulls(env):
+    main, db, install = env
+    today = datetime.now(main.JST).strftime("%Y-%m-%d")
+    col = db.collection("meals").document("Uuser1").collection(today)
+    col.document("a").set({"dish": "x", "calories": 1200, "protein": None, "fat": None, "carbs": None})
+    col.document("b").set({"dish": "y", "calories": 300, "protein": 10, "fat": 5, "carbs": 40})
+    total = main.get_daily_total("Uuser1")
+    assert total == {"calories": 1500, "protein": 10, "fat": 5, "carbs": 40}
+
+
+def test_null_analysis_from_ai_gives_retry_message_not_a_saved_record(env, monkeypatch):
+    main, db, install = env
+    install(make_http())
+    monkeypatch.setattr(main, "classify_and_analyze",
+                        lambda t, attempts=3: {"type": "食事", "dish": "ラーメン", "calories": None,
+                                               "protein": None, "fat": None, "carbs": None})
+    assert post(main, [text_event("ラーメン")]).status_code == 200
+    today = datetime.now(main.JST).strftime("%Y-%m-%d")
+    assert docs_under(db, "meals", "Uuser1", today) == []
+    assert items(main, db)[0]["outcome"] == "handler_error"
+
+
 def test_empty_events_record_nothing(env):
     main, db, install = env
     install(make_http())
