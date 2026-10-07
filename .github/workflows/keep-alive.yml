@@ -10,4 +10,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Ping production status endpoint
-        run: curl -sf -o /dev/null https://meal-tracker-bot-yzd1.onrender.com/status
+        run: curl -s -o /dev/null https://meal-tracker-bot-yzd1.onrender.com/status
