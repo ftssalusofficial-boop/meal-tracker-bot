@@ -15,3 +15,7 @@ services:
         sync: false
       - key: SECRET_KEY
         sync: false
+      - key: ALERT_LINE_USER_ID
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
