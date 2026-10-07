@@ -1,8 +1,9 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from flask import Flask, request, session, jsonify
+from flask import Flask, request, session, jsonify, g
 import os
+import sys
 import json
 import requests
 import time
@@ -73,9 +74,11 @@ def push_message(user_id, text):
         "messages": [{"type": "text", "text": text}]
     }
     try:
-        requests.post("https://api.line.me/v2/bot/message/push", headers=headers, json=data, timeout=10)
+        resp = requests.post("https://api.line.me/v2/bot/message/push", headers=headers, json=data, timeout=10)
+        return resp.status_code
     except Exception:
         traceback.print_exc()
+        return None
 
 def reply_message(reply_token, user_id, text):
     headers = {
@@ -88,15 +91,16 @@ def reply_message(reply_token, user_id, text):
     }
     try:
         resp = requests.post("https://api.line.me/v2/bot/message/reply", headers=headers, json=data, timeout=10)
-        # A reply token expires a short while after the webhook fires (e.g. after
-        # a slow cold start + Gemini call). When that happens LINE returns a 4xx
-        # here instead of delivering the message, so fall back to a push message
-        # (keyed on user_id, not the token) rather than silently losing the reply.
-        if resp.status_code != 200:
-            push_message(user_id, text)
+        if resp.status_code == 200:
+            return {"ok": True, "via": "reply", "status": 200}
     except Exception:
         traceback.print_exc()
-        push_message(user_id, text)
+    # A reply token expires a short while after the webhook fires (e.g. after
+    # a slow cold start + Gemini call). When that happens LINE returns a 4xx
+    # here instead of delivering the message, so fall back to a push message
+    # (keyed on user_id, not the token) rather than silently losing the reply.
+    status = push_message(user_id, text)
+    return {"ok": status == 200, "via": "push", "status": status}
 
 def start_loading_animation(user_id, seconds=60):
     headers = {
@@ -128,8 +132,8 @@ def save_user_profile(user_id):
                 "picture_url": profile.get("pictureUrl", "")
             })
 
-def gemini_generate(prompt, image_bytes=None):
-    for i in range(3):
+def gemini_generate(prompt, image_bytes=None, attempts=3):
+    for i in range(attempts):
         try:
             if image_bytes:
                 response = client.models.generate_content(
@@ -146,7 +150,7 @@ def gemini_generate(prompt, image_bytes=None):
                 )
             return response.text
         except Exception as e:
-            if i == 2:
+            if i == attempts - 1:
                 raise e
             time.sleep(2)
 
@@ -173,7 +177,7 @@ JSONのみで返してください。例：{{"type":"食事"}}
     data = json.loads(clean)
     return data.get("type", "その他")
 
-def classify_and_analyze(text):
+def classify_and_analyze(text, attempts=3):
     prompt = f"""以下のメッセージが「食事」「運動」「合計確認」「目標設定」「記録一覧」「削除リスト」「やり直し」「使い方」「体重記録」「体重確認」「その他」のどれかを判定してください。
 
 判定ルール：
@@ -198,7 +202,7 @@ def classify_and_analyze(text):
 それ以外の例：{{"type":"合計確認"}}
 
 メッセージ：「{text}」"""
-    result = gemini_generate(prompt)
+    result = gemini_generate(prompt, attempts=attempts)
     clean = result.strip().replace("```json", "").replace("```", "").strip()
     return json.loads(clean)
 
@@ -415,174 +419,249 @@ def format_total_reply(total, burned, goal):
             reply += f"\n炭水化物：残り{c_remaining} g（{c_percent}%達成）"
     return reply
 
+def log_error(expected=()):
+    exc = sys.exc_info()[1]
+    if expected and isinstance(exc, expected):
+        return
+    traceback.print_exc()
+    desc = type(exc).__name__ if exc else "unknown"
+    try:
+        g.event_errors.append(desc)
+    except (AttributeError, RuntimeError):
+        pass
+
+def display_name_of(user_id):
+    try:
+        return (db.collection("users").document(user_id).get().to_dict() or {}).get("display_name") or user_id[:10]
+    except Exception:
+        return user_id[:10]
+
+from monitoring import Monitor
+monitor = Monitor(
+    db=db,
+    http=requests,
+    line_token=LINE_CHANNEL_ACCESS_TOKEN,
+    alert_user_id=os.environ.get("ALERT_LINE_USER_ID"),
+    public_base_url=os.environ.get("PUBLIC_BASE_URL", "https://meal-tracker-bot-yzd1.onrender.com"),
+    classify_fn=lambda text: classify_and_analyze(text, attempts=1),
+    now_fn=lambda: datetime.now(JST),
+)
+if not monitor.alert_user_id:
+    print("WARNING: ALERT_LINE_USER_ID is not set; failure alerts and the morning report are disabled.", flush=True)
+
+def process_event(event):
+
+    if event["type"] == "follow":
+        user_id = event["source"]["userId"]
+        save_user_profile(user_id)
+        welcome = f"🎉 SALUS MEALへようこそ！\n\n{HELP_TEXT}"
+        reply_token = event["replyToken"]
+        return reply_message(reply_token, user_id, welcome)
+
+    if event["type"] != "message":
+        return None
+
+    reply_token = event["replyToken"]
+    user_id = event["source"]["userId"]
+    # Show LINE's "..." typing indicator right away so the user sees something
+    # is happening during a slow cold start / Gemini call, instead of nothing
+    # at all until the (possibly delayed) reply arrives.
+    start_loading_animation(user_id)
+    try:
+        save_user_profile(user_id)
+    except Exception:
+        log_error()
+    msg_type = event["message"]["type"]
+
+    if msg_type == "image":
+        try:
+            message_id = event["message"]["id"]
+            image_bytes = get_line_image(message_id)
+            result = analyze_food_image(image_bytes)
+            clean = result.strip().replace("```json", "").replace("```", "").strip()
+            meal_data = json.loads(clean)
+            save_meal(user_id, meal_data)
+            reply = f"📸 {meal_data['dish']}\n\nカロリー：{meal_data['calories']} kcal\nタンパク質：{meal_data['protein']} g\n脂質：{meal_data['fat']} g\n炭水化物：{meal_data['carbs']} g\n\n✅ 記録しました！"
+        except Exception:
+            log_error()
+            reply = "写真から料理を認識できませんでした。もう一度試してください。"
+        return reply_message(reply_token, user_id, reply)
+
+    elif msg_type == "text":
+        user_text = event["message"]["text"]
+
+        if user_text.startswith("目標設定"):
+            try:
+                parts = user_text.replace("目標設定", "").strip().split()
+                calories = int(parts[0])
+                protein = int(parts[1]) if len(parts) > 1 else None
+                fat = int(parts[2]) if len(parts) > 2 else None
+                carbs = int(parts[3]) if len(parts) > 3 else None
+                set_goal(user_id, calories, protein, fat, carbs)
+                reply = f"✅ 目標を設定しました！\nカロリー：{calories} kcal"
+                if protein: reply += f"\nタンパク質：{protein} g"
+                if fat: reply += f"\n脂質：{fat} g"
+                if carbs: reply += f"\n炭水化物：{carbs} g"
+            except Exception:
+                log_error((ValueError, IndexError))
+                reply = "目標設定の形式が正しくありません。\n例：目標設定 2000 150 50 250"
+
+        elif user_text.startswith("削除 "):
+            try:
+                number = int(user_text.replace("削除", "").strip())
+                reply = delete_by_number(user_id, number)
+            except Exception:
+                log_error((ValueError,))
+                try:
+                    reply = show_delete_list(user_id)
+                except Exception:
+                    log_error()
+                    reply = "削除できませんでした。もう一度試してください。"
+
+        elif user_text.startswith("体重"):
+            try:
+                weight_str = user_text.replace("体重", "").strip()
+                weight = float(weight_str)
+                save_weight(user_id, weight)
+                reply = f"⚖️ 体重を記録しました！\n{weight} kg\n\n「体重確認」で推移を確認できます！"
+            except Exception:
+                try:
+                    msg_type_classified = classify_message(user_text)
+                    if msg_type_classified == "体重確認":
+                        records = get_weight_history(user_id)
+                        reply = format_weight_reply(records)
+                    else:
+                        reply = "体重の記録：「体重 68.5」のように送ってください！\n体重の確認：「体重確認」と送ってください！"
+                except Exception:
+                    log_error()
+                    reply = "体重の記録：「体重 68.5」のように送ってください！"
+
+        else:
+            try:
+                analysis = classify_and_analyze(user_text)
+                msg_type_classified = analysis.get("type", "その他")
+            except Exception:
+                log_error()
+                msg_type_classified = "その他"
+                analysis = {}
+
+            if msg_type_classified == "合計確認":
+                try:
+                    total = get_daily_total(user_id)
+                    burned = get_daily_exercise_total(user_id)
+                    goal = get_goal(user_id)
+                    reply = format_total_reply(total, burned, goal)
+                except Exception:
+                    log_error()
+                    reply = "合計を取得できませんでした。もう一度試してください。"
+
+            elif msg_type_classified == "運動":
+                try:
+                    exercise_data = {"exercise": analysis["exercise"], "burned_calories": analysis["burned_calories"]}
+                    save_exercise(user_id, exercise_data)
+                    reply = f"🏃 {exercise_data['exercise']}\n\n消費カロリー：{exercise_data['burned_calories']} kcal\n\n✅ 記録しました！"
+                except Exception:
+                    log_error()
+                    reply = "運動を認識できませんでした。もう一度試してください。"
+
+            elif msg_type_classified == "食事":
+                try:
+                    meal_data = {"dish": analysis["dish"], "calories": analysis["calories"], "protein": analysis["protein"], "fat": analysis["fat"], "carbs": analysis["carbs"]}
+                    save_meal(user_id, meal_data)
+                    reply = f"🍽 {meal_data['dish']}\n\nカロリー：{meal_data['calories']} kcal\nタンパク質：{meal_data['protein']} g\n脂質：{meal_data['fat']} g\n炭水化物：{meal_data['carbs']} g\n\n✅ 記録しました！"
+                except Exception:
+                    log_error()
+                    reply = "食事を認識できませんでした。料理名を入力してみてください。"
+
+            elif msg_type_classified == "記録一覧":
+                try:
+                    reply = get_today_records(user_id)
+                except Exception:
+                    log_error()
+                    reply = "記録を取得できませんでした。もう一度試してください。"
+
+            elif msg_type_classified == "削除リスト":
+                try:
+                    reply = show_delete_list(user_id)
+                except Exception:
+                    log_error()
+                    reply = "削除リストを取得できませんでした。もう一度試してください。"
+
+            elif msg_type_classified == "やり直し":
+                try:
+                    reply = delete_last_record(user_id)
+                except Exception:
+                    log_error()
+                    reply = "削除できませんでした。もう一度試してください。"
+
+            elif msg_type_classified == "使い方":
+                reply = HELP_TEXT
+
+            elif msg_type_classified == "体重確認":
+                try:
+                    records = get_weight_history(user_id)
+                    reply = format_weight_reply(records)
+                except Exception:
+                    log_error()
+                    reply = "体重の記録を取得できませんでした。もう一度試してください。"
+
+            else:
+                reply = HELP_TEXT
+
+        return reply_message(reply_token, user_id, reply)
+
+    else:
+        return reply_message(reply_token, user_id, "料理名か食事の写真を送ってください！")
+
+def handle_event(event):
+    etype = event.get("type")
+    if etype not in ("follow", "message"):
+        return
+    if etype == "follow":
+        kind = "follow"
+    else:
+        mtype = (event.get("message") or {}).get("type")
+        kind = mtype if mtype in ("text", "image") else "other"
+    user_id = (event.get("source") or {}).get("userId", "")
+    if not user_id:
+        return
+    g.event_errors = []
+    started = time.time()
+    reply = None
+    try:
+        reply = process_event(event)
+    except Exception:
+        log_error()
+    duration_ms = (time.time() - started) * 1000
+    errors = list(getattr(g, "event_errors", []))
+    if errors:
+        outcome, error = "handler_error", " | ".join(errors)
+    elif reply is not None and not reply["ok"]:
+        outcome, error = "reply_failed", f"reply status {reply['status']} via {reply['via']}"
+    else:
+        outcome, error = "ok", None
+    monitor.record_event(user_id, kind, outcome, duration_ms, reply, error)
+    if outcome != "ok":
+        monitor.alert_staff(
+            "event_failure",
+            f"⚠️ SALUS MEAL 返信に失敗した可能性があります\n"
+            f"時刻：{datetime.now(JST).strftime('%m/%d %H:%M')}\n"
+            f"お客様：{display_name_of(user_id)}\n"
+            f"種別：{kind} / 結果：{outcome}\n"
+            f"原因：{error}",
+        )
+
 @app.route("/callback", methods=["POST"])
 def callback():
     body = request.get_json()
     for event in body.get("events", []):
-
-        if event["type"] == "follow":
-            user_id = event["source"]["userId"]
-            save_user_profile(user_id)
-            welcome = f"🎉 SALUS MEALへようこそ！\n\n{HELP_TEXT}"
-            reply_token = event["replyToken"]
-            reply_message(reply_token, user_id, welcome)
-            continue
-
-        if event["type"] != "message":
-            continue
-
-        reply_token = event["replyToken"]
-        user_id = event["source"]["userId"]
-        # Show LINE's "..." typing indicator right away so the user sees something
-        # is happening during a slow cold start / Gemini call, instead of nothing
-        # at all until the (possibly delayed) reply arrives.
-        start_loading_animation(user_id)
-        try:
-            save_user_profile(user_id)
-        except Exception:
-            traceback.print_exc()
-        msg_type = event["message"]["type"]
-
-        if msg_type == "image":
-            try:
-                message_id = event["message"]["id"]
-                image_bytes = get_line_image(message_id)
-                result = analyze_food_image(image_bytes)
-                clean = result.strip().replace("```json", "").replace("```", "").strip()
-                meal_data = json.loads(clean)
-                save_meal(user_id, meal_data)
-                reply = f"📸 {meal_data['dish']}\n\nカロリー：{meal_data['calories']} kcal\nタンパク質：{meal_data['protein']} g\n脂質：{meal_data['fat']} g\n炭水化物：{meal_data['carbs']} g\n\n✅ 記録しました！"
-            except Exception:
-                traceback.print_exc()
-                reply = "写真から料理を認識できませんでした。もう一度試してください。"
-            reply_message(reply_token, user_id, reply)
-
-        elif msg_type == "text":
-            user_text = event["message"]["text"]
-
-            if user_text.startswith("目標設定"):
-                try:
-                    parts = user_text.replace("目標設定", "").strip().split()
-                    calories = int(parts[0])
-                    protein = int(parts[1]) if len(parts) > 1 else None
-                    fat = int(parts[2]) if len(parts) > 2 else None
-                    carbs = int(parts[3]) if len(parts) > 3 else None
-                    set_goal(user_id, calories, protein, fat, carbs)
-                    reply = f"✅ 目標を設定しました！\nカロリー：{calories} kcal"
-                    if protein: reply += f"\nタンパク質：{protein} g"
-                    if fat: reply += f"\n脂質：{fat} g"
-                    if carbs: reply += f"\n炭水化物：{carbs} g"
-                except Exception:
-                    traceback.print_exc()
-                    reply = "目標設定の形式が正しくありません。\n例：目標設定 2000 150 50 250"
-
-            elif user_text.startswith("削除 "):
-                try:
-                    number = int(user_text.replace("削除", "").strip())
-                    reply = delete_by_number(user_id, number)
-                except Exception:
-                    traceback.print_exc()
-                    try:
-                        reply = show_delete_list(user_id)
-                    except Exception:
-                        traceback.print_exc()
-                        reply = "削除できませんでした。もう一度試してください。"
-
-            elif user_text.startswith("体重"):
-                try:
-                    weight_str = user_text.replace("体重", "").strip()
-                    weight = float(weight_str)
-                    save_weight(user_id, weight)
-                    reply = f"⚖️ 体重を記録しました！\n{weight} kg\n\n「体重確認」で推移を確認できます！"
-                except Exception:
-                    try:
-                        msg_type_classified = classify_message(user_text)
-                        if msg_type_classified == "体重確認":
-                            records = get_weight_history(user_id)
-                            reply = format_weight_reply(records)
-                        else:
-                            reply = "体重の記録：「体重 68.5」のように送ってください！\n体重の確認：「体重確認」と送ってください！"
-                    except Exception:
-                        traceback.print_exc()
-                        reply = "体重の記録：「体重 68.5」のように送ってください！"
-
-            else:
-                try:
-                    analysis = classify_and_analyze(user_text)
-                    msg_type_classified = analysis.get("type", "その他")
-                except Exception:
-                    traceback.print_exc()
-                    msg_type_classified = "その他"
-                    analysis = {}
-
-                if msg_type_classified == "合計確認":
-                    try:
-                        total = get_daily_total(user_id)
-                        burned = get_daily_exercise_total(user_id)
-                        goal = get_goal(user_id)
-                        reply = format_total_reply(total, burned, goal)
-                    except Exception:
-                        traceback.print_exc()
-                        reply = "合計を取得できませんでした。もう一度試してください。"
-
-                elif msg_type_classified == "運動":
-                    try:
-                        exercise_data = {"exercise": analysis["exercise"], "burned_calories": analysis["burned_calories"]}
-                        save_exercise(user_id, exercise_data)
-                        reply = f"🏃 {exercise_data['exercise']}\n\n消費カロリー：{exercise_data['burned_calories']} kcal\n\n✅ 記録しました！"
-                    except Exception:
-                        traceback.print_exc()
-                        reply = "運動を認識できませんでした。もう一度試してください。"
-
-                elif msg_type_classified == "食事":
-                    try:
-                        meal_data = {"dish": analysis["dish"], "calories": analysis["calories"], "protein": analysis["protein"], "fat": analysis["fat"], "carbs": analysis["carbs"]}
-                        save_meal(user_id, meal_data)
-                        reply = f"🍽 {meal_data['dish']}\n\nカロリー：{meal_data['calories']} kcal\nタンパク質：{meal_data['protein']} g\n脂質：{meal_data['fat']} g\n炭水化物：{meal_data['carbs']} g\n\n✅ 記録しました！"
-                    except Exception:
-                        traceback.print_exc()
-                        reply = "食事を認識できませんでした。料理名を入力してみてください。"
-
-                elif msg_type_classified == "記録一覧":
-                    try:
-                        reply = get_today_records(user_id)
-                    except Exception:
-                        traceback.print_exc()
-                        reply = "記録を取得できませんでした。もう一度試してください。"
-
-                elif msg_type_classified == "削除リスト":
-                    try:
-                        reply = show_delete_list(user_id)
-                    except Exception:
-                        traceback.print_exc()
-                        reply = "削除リストを取得できませんでした。もう一度試してください。"
-
-                elif msg_type_classified == "やり直し":
-                    try:
-                        reply = delete_last_record(user_id)
-                    except Exception:
-                        traceback.print_exc()
-                        reply = "削除できませんでした。もう一度試してください。"
-
-                elif msg_type_classified == "使い方":
-                    reply = HELP_TEXT
-
-                elif msg_type_classified == "体重確認":
-                    try:
-                        records = get_weight_history(user_id)
-                        reply = format_weight_reply(records)
-                    except Exception:
-                        traceback.print_exc()
-                        reply = "体重の記録を取得できませんでした。もう一度試してください。"
-
-                else:
-                    reply = HELP_TEXT
-
-            reply_message(reply_token, user_id, reply)
-
-        else:
-            reply_message(reply_token, user_id, "料理名か食事の写真を送ってください！")
+        handle_event(event)
     return "OK"
+
+@app.route("/status", methods=["GET", "HEAD"])
+def status():
+    payload, code = monitor.get_status(detail=request.args.get("detail") == "1")
+    return jsonify(payload), code
 
 @app.route("/health")
 def health():

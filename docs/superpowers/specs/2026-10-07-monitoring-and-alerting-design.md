@@ -40,7 +40,7 @@ LINEにはユーザーとして送信する手段がなく、実際のユーザ�
 1. `line_webhook`: `GET /v2/bot/channel/webhook/endpoint` が `active:true` かつ URL が `PUBLIC_BASE_URL + "/callback"`（環境変数、既定は本番URL）と一致、かつ `POST /v2/bot/channel/webhook/test` が `success:true, statusCode:200`（LINE側から本番へ実際にPOSTが届く）。
 2. `line_reply_api`: `POST /v2/bot/message/validate/reply` が200（キーと形式の検証のみで送信しない）。404などエンドポイント非対応の場合は `skipped` とし失敗にしない。
 3. `gemini`: `classify_and_analyze("ラーメン")` が `type=="食事"` かつ `calories` が数値。**1時間に1回まで**（無料枠節約）。`system/canary.gemini_checked_at` で管理。それ以外の回は前回結果を引き継ぐ。
-4. `firestore`: `system/canary` 自体の書き込みと読み戻しで確認。
+4. `firestore`: `system/canary_probe` に現在時刻を書き込み、読み戻して一致を確認。
 
 起動方法: 外部ping（UptimeRobot・GitHub keep-alive）が叩く `GET /status` が、前回実行から15分以上経っていて実行中でなければ、バックグラウンドスレッドで `run_canary()` を開始する（gthreadで並行処理）。専用スケジューラは使わない。
 
