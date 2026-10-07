@@ -17,6 +17,40 @@ def _parse(iso):
     return datetime.fromisoformat(iso) if iso else None
 
 
+def _fmt(iso):
+    dt = _parse(iso)
+    return dt.strftime("%m/%d %H:%M") if dt else "なし"
+
+
+def build_morning_report(yesterday, canary, now):
+    received, ok, failed = yesterday["received"], yesterday["ok"], yesterday["failed"]
+    ran_at = _parse(canary.get("ran_at"))
+    problems = []
+    if failed > 0:
+        problems.append(f"昨日の失敗が{failed}件あります")
+    if ran_at is None:
+        problems.append("自動テストが未実行です")
+    elif (now - ran_at) > timedelta(minutes=STATUS_OK_MAX_AGE_MIN):
+        problems.append("自動テストが止まっています")
+    elif not canary.get("ok"):
+        bad = ", ".join(k for k, v in (canary.get("checks") or {}).items() if v not in ("ok", "skipped"))
+        problems.append(f"自動テストが失敗しています（{bad}）")
+    icon = "⚠️" if problems else ("ℹ️" if received == 0 else "✅")
+    lines = [
+        f"{icon} SALUS MEAL 朝の確認（{now.strftime('%m/%d')}）",
+        f"昨日の利用：受信{received}件 / 成功{ok}件 / 失敗{failed}件",
+        f"最後の受信：{_fmt(yesterday.get('last_received_at'))}",
+        f"最後の自動テスト：{_fmt(canary.get('ran_at'))}（{'成功' if canary.get('ok') else '失敗または未実行'}）",
+    ]
+    if problems:
+        lines.append("要確認：" + "、".join(problems))
+    elif received == 0:
+        lines.append("昨日の利用はありませんでした。サーバーとWebhookは正常です。")
+    else:
+        lines.append("異常は検知されていません。")
+    return "\n".join(lines)
+
+
 class Monitor:
     def __init__(self, db, http, line_token, alert_user_id, public_base_url,
                  classify_fn, now_fn, spawn=None):
@@ -297,4 +331,40 @@ class Monitor:
                 traceback.print_exc()
                 payload["yesterday"] = None
         self._maybe_start_canary(canary, now)
+        self._maybe_start_morning_report(now)
         return payload, (200 if payload["ok"] else 503)
+
+    def _maybe_start_morning_report(self, now):
+        if not self.alert_user_id:
+            return
+        minutes = now.hour * 60 + now.minute
+        if not (MORNING_START_MIN <= minutes < MORNING_END_MIN):
+            return
+        with self._lock:
+            if self._report_running:
+                return
+            self._report_running = True
+        self._spawn(self._send_morning_report_guarded)
+
+    def _send_morning_report_guarded(self):
+        try:
+            self.send_morning_report()
+        except Exception:
+            traceback.print_exc()
+        finally:
+            with self._lock:
+                self._report_running = False
+
+    def send_morning_report(self):
+        now = self._now()
+        today = now.strftime("%Y-%m-%d")
+        ref = self.db.collection("system").document("morning_report")
+        doc = ref.get()
+        if doc.exists and doc.to_dict().get("sent_date") == today:
+            return False
+        text = build_morning_report(self.yesterday_summary(), self._load_canary(), now)
+        ref.set({"sent_date": today})
+        if self._push(self.alert_user_id, text):
+            return True
+        ref.set({"sent_date": ""})
+        return False
