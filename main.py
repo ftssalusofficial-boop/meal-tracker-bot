@@ -132,8 +132,8 @@ def save_user_profile(user_id):
                 "picture_url": profile.get("pictureUrl", "")
             })
 
-def gemini_generate(prompt, image_bytes=None):
-    for i in range(3):
+def gemini_generate(prompt, image_bytes=None, attempts=3):
+    for i in range(attempts):
         try:
             if image_bytes:
                 response = client.models.generate_content(
@@ -150,7 +150,7 @@ def gemini_generate(prompt, image_bytes=None):
                 )
             return response.text
         except Exception as e:
-            if i == 2:
+            if i == attempts - 1:
                 raise e
             time.sleep(2)
 
@@ -177,7 +177,7 @@ JSONのみで返してください。例：{{"type":"食事"}}
     data = json.loads(clean)
     return data.get("type", "その他")
 
-def classify_and_analyze(text):
+def classify_and_analyze(text, attempts=3):
     prompt = f"""以下のメッセージが「食事」「運動」「合計確認」「目標設定」「記録一覧」「削除リスト」「やり直し」「使い方」「体重記録」「体重確認」「その他」のどれかを判定してください。
 
 判定ルール：
@@ -202,7 +202,7 @@ def classify_and_analyze(text):
 それ以外の例：{{"type":"合計確認"}}
 
 メッセージ：「{text}」"""
-    result = gemini_generate(prompt)
+    result = gemini_generate(prompt, attempts=attempts)
     clean = result.strip().replace("```json", "").replace("```", "").strip()
     return json.loads(clean)
 
@@ -419,10 +419,12 @@ def format_total_reply(total, burned, goal):
             reply += f"\n炭水化物：残り{c_remaining} g（{c_percent}%達成）"
     return reply
 
-def log_error():
-    traceback.print_exc()
+def log_error(expected=()):
     exc = sys.exc_info()[1]
-    desc = f"{type(exc).__name__}: {exc}"[:150] if exc else "unknown"
+    if expected and isinstance(exc, expected):
+        return
+    traceback.print_exc()
+    desc = type(exc).__name__ if exc else "unknown"
     try:
         g.event_errors.append(desc)
     except (AttributeError, RuntimeError):
@@ -441,7 +443,7 @@ monitor = Monitor(
     line_token=LINE_CHANNEL_ACCESS_TOKEN,
     alert_user_id=os.environ.get("ALERT_LINE_USER_ID"),
     public_base_url=os.environ.get("PUBLIC_BASE_URL", "https://meal-tracker-bot-yzd1.onrender.com"),
-    classify_fn=lambda text: classify_and_analyze(text),
+    classify_fn=lambda text: classify_and_analyze(text, attempts=1),
     now_fn=lambda: datetime.now(JST),
 )
 if not monitor.alert_user_id:
@@ -501,7 +503,7 @@ def process_event(event):
                 if fat: reply += f"\n脂質：{fat} g"
                 if carbs: reply += f"\n炭水化物：{carbs} g"
             except Exception:
-                log_error()
+                log_error((ValueError, IndexError))
                 reply = "目標設定の形式が正しくありません。\n例：目標設定 2000 150 50 250"
 
         elif user_text.startswith("削除 "):
@@ -509,7 +511,7 @@ def process_event(event):
                 number = int(user_text.replace("削除", "").strip())
                 reply = delete_by_number(user_id, number)
             except Exception:
-                log_error()
+                log_error((ValueError,))
                 try:
                     reply = show_delete_list(user_id)
                 except Exception:
@@ -621,6 +623,8 @@ def handle_event(event):
         mtype = (event.get("message") or {}).get("type")
         kind = mtype if mtype in ("text", "image") else "other"
     user_id = (event.get("source") or {}).get("userId", "")
+    if not user_id:
+        return
     g.event_errors = []
     started = time.time()
     reply = None

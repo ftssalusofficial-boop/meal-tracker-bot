@@ -8,6 +8,9 @@ GEMINI_CHECK_INTERVAL_MIN = 60
 STATUS_OK_MAX_AGE_MIN = 45
 WARMUP_MIN = 10
 ALERT_INTERVAL_MIN = 30
+MAX_ALERTS_PER_DAY = 4
+GEMINI_RETRY_AFTER_FAIL_MIN = 30
+CANARY_HUNG_MIN = 5
 MORNING_START_MIN = 7 * 60
 MORNING_END_MIN = 7 * 60 + 30
 STATUS_CACHE_SEC = 30
@@ -69,6 +72,9 @@ class Monitor:
         self._ran_this_process = False
         self._cache = None
         self._alert_last = {}
+        self._alert_day = ("", 0)
+        self._failure_streak = 0
+        self._canary_started_at = None
 
     @staticmethod
     def _spawn_thread(fn):
@@ -120,6 +126,11 @@ class Monitor:
         if not self.alert_user_id:
             return False
         now = self._now()
+        day = now.strftime("%Y-%m-%d")
+        if self._alert_day[0] != day:
+            self._alert_day = (day, 0)
+        if self._alert_day[1] >= MAX_ALERTS_PER_DAY:
+            return False
         last = self._alert_last.get(key)
         try:
             doc = self.db.collection("system").document("alerts").get()
@@ -133,6 +144,7 @@ class Monitor:
         if not self._push(self.alert_user_id, text):
             return False
         self._alert_last[key] = now
+        self._alert_day = (day, self._alert_day[1] + 1)
         try:
             self.db.collection("system").document("alerts").update({key: now.isoformat()})
         except Exception:
@@ -211,9 +223,11 @@ class Monitor:
 
     def _gemini_due(self, prev, now):
         checked = _parse(prev.get("gemini_checked_at"))
-        if checked is None or (prev.get("checks") or {}).get("gemini") != "ok":
+        if checked is None:
             return True
-        return (now - checked) >= timedelta(minutes=GEMINI_CHECK_INTERVAL_MIN)
+        prev_ok = (prev.get("checks") or {}).get("gemini") == "ok"
+        wait = GEMINI_CHECK_INTERVAL_MIN if prev_ok else GEMINI_RETRY_AFTER_FAIL_MIN
+        return (now - checked) >= timedelta(minutes=wait)
 
     def _alert_canary_failure(self, failures, checks):
         bad = ", ".join(f"{k}: {v}" for k, v in checks.items() if v not in ("ok", "skipped"))
@@ -225,7 +239,7 @@ class Monitor:
             prev = self._load_canary()
         except Exception:
             traceback.print_exc()
-            prev = {}
+            prev = self._cache[1] if self._cache else {}
         checks = {
             "line_webhook": self._check_line_webhook(),
             "line_reply_api": self._check_reply_api(),
@@ -238,7 +252,9 @@ class Monitor:
             gemini_checked_at = prev.get("gemini_checked_at")
         checks["firestore"] = self._check_firestore()
         ok = all(v in ("ok", "skipped") for v in checks.values())
-        failures = 0 if ok else int(prev.get("consecutive_failures") or 0) + 1
+        previous_failures = max(int(prev.get("consecutive_failures") or 0), self._failure_streak)
+        failures = 0 if ok else previous_failures + 1
+        self._failure_streak = failures
         result = {
             "ran_at": now.isoformat(),
             "ok": ok,
@@ -261,7 +277,8 @@ class Monitor:
         try:
             now = self._now()
             prev = self._load_canary()
-            failures = int(prev.get("consecutive_failures") or 0) + 1
+            failures = max(int(prev.get("consecutive_failures") or 0), self._failure_streak) + 1
+            self._failure_streak = failures
             checks = {"canary": f"fail: {type(exc).__name__}"}
             result = {
                 "ran_at": now.isoformat(),
@@ -293,9 +310,11 @@ class Monitor:
         if ran_at is not None and (now - ran_at) < timedelta(minutes=CANARY_INTERVAL_MIN):
             return
         with self._lock:
-            if self._canary_running:
+            if (self._canary_running and self._canary_started_at is not None
+                    and (now - self._canary_started_at) < timedelta(minutes=CANARY_HUNG_MIN)):
                 return
             self._canary_running = True
+            self._canary_started_at = now
         self._spawn(self._run_canary_guarded)
 
     def get_status(self, detail=False):

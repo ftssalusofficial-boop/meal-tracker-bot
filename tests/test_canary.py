@@ -77,14 +77,49 @@ def test_gemini_is_checked_at_most_once_per_hour():
     assert len(calls) == 2
 
 
-def test_failed_gemini_check_is_retried_on_next_run():
+def test_failed_gemini_check_is_retried_after_thirty_minutes():
     state = {"ok": False}
-    m, clock = make_monitor(classify=lambda t: GOOD_CLASSIFY if state["ok"] else {"type": "x"})
+    calls = []
+
+    def classify(t):
+        calls.append(t)
+        return GOOD_CLASSIFY if state["ok"] else {"type": "x"}
+
+    m, clock = make_monitor(classify=classify)
     assert m.run_canary()["checks"]["gemini"].startswith("fail")
     state["ok"] = True
-    clock.advance(minutes=5)
+    clock.advance(minutes=15)
     r = m.run_canary()
+    assert len(calls) == 1 and r["checks"]["gemini"].startswith("fail")  # carried forward, not re-checked yet
+    clock.advance(minutes=16)
+    r = m.run_canary()
+    assert len(calls) == 2
     assert r["checks"]["gemini"] == "ok" and r["ok"] is True and r["consecutive_failures"] == 0
+
+
+def test_firestore_outage_does_not_trigger_extra_gemini_calls():
+    calls = []
+
+    def classify(t):
+        calls.append(t)
+        return GOOD_CLASSIFY
+
+    m, clock = make_monitor(classify=classify)
+    m.run_canary()
+    m.db.fail = True
+    clock.advance(minutes=15)
+    m.run_canary()
+    assert len(calls) == 1
+
+
+def test_firestore_outage_still_alerts_on_second_consecutive_run():
+    m, clock = make_monitor()
+    m.db.fail = True
+    m.run_canary()
+    assert m.http.pushes() == []
+    clock.advance(minutes=15)
+    m.run_canary()
+    assert len(m.http.pushes()) == 1
 
 
 def test_canary_survives_firestore_outage():

@@ -34,6 +34,19 @@ def test_stale_canary_returns_503_and_requests_a_new_run():
     assert len(spawned) == 1
 
 
+def test_hung_canary_is_restarted_after_five_minutes():
+    spawned = []
+    m, clock = make_monitor(spawn=spawned.append)  # the spawned canary never finishes
+    m.get_status()
+    assert len(spawned) == 1
+    clock.advance(minutes=4)
+    m.get_status()
+    assert len(spawned) == 1  # still considered running
+    clock.advance(minutes=2)
+    m.get_status()
+    assert len(spawned) == 2  # watchdog starts a replacement
+
+
 def test_no_data_after_warmup_returns_503():
     m, clock = make_monitor(spawn=lambda fn: None)
     clock.advance(minutes=11)

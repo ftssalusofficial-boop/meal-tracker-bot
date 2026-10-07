@@ -43,6 +43,14 @@ def test_alert_push_network_error_is_swallowed():
     assert m.alert_staff("k", "hello") is False
 
 
+def test_daily_alert_cap_protects_the_push_quota():
+    m, clock = make_monitor()
+    sent = sum(1 for i in range(10) if m.alert_staff(f"k{i}", "x"))  # distinct keys: only the cap limits
+    assert sent == 4
+    clock.advance(days=1)
+    assert m.alert_staff("again", "x") is True
+
+
 def test_alert_still_sent_once_when_firestore_is_down():
     m, _ = make_monitor()
     m.db.fail = True

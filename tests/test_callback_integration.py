@@ -121,6 +121,73 @@ def test_handler_error_is_recorded_and_alerted(env, monkeypatch):
     assert len(staff_pushes(http)) == 1
 
 
+def test_error_field_never_contains_exception_message(env, monkeypatch):
+    main, db, install = env
+    install(make_http())
+
+    def boom(text):
+        raise RuntimeError("secret meal text")
+
+    monkeypatch.setattr(main, "classify_and_analyze", boom)
+    post(main, [text_event("ラーメン")])
+    row = items(main, db)[0]
+    assert row["error"] == "RuntimeError" and "secret meal text" not in row["error"]
+
+
+def test_input_typos_are_not_failures_and_store_no_message_text(env, monkeypatch):
+    main, db, install = env
+    http = install(make_http())
+    monkeypatch.setattr(main, "show_delete_list", lambda user_id: "list")
+    assert post(main, [text_event("目標設定 にせん")]).status_code == 200
+    assert post(main, [text_event("削除 abc")]).status_code == 200
+    rows = items(main, db)
+    assert len(rows) == 2
+    assert all(r["outcome"] == "ok" and not r["error"] for r in rows)
+    assert staff_pushes(http) == []
+
+
+def test_message_without_user_id_is_ignored(env):
+    main, db, install = env
+    http = install(make_http())
+    event = {"type": "message", "replyToken": "rt", "source": {"type": "group", "groupId": "G1"},
+             "message": {"type": "text", "id": "m1", "text": "hello"}}
+    assert post(main, [event]).status_code == 200
+    assert items(main, db) == [] and staff_pushes(http) == []
+
+
+def test_gemini_generate_attempts_parameter(env, monkeypatch):
+    main, db, install = env
+    calls = []
+
+    class Models:
+        def generate_content(self, **kw):
+            calls.append(1)
+            raise RuntimeError("boom")
+
+    class Client:
+        models = Models()
+
+    monkeypatch.setattr(main, "client", Client())
+    monkeypatch.setattr(main.time, "sleep", lambda s: None)
+    with pytest.raises(RuntimeError):
+        main.gemini_generate("p", attempts=1)
+    assert len(calls) == 1
+    calls.clear()
+    with pytest.raises(RuntimeError):
+        main.gemini_generate("p")
+    assert len(calls) == 3
+
+
+def test_canary_gemini_check_uses_a_single_attempt(env, monkeypatch):
+    main, db, install = env
+    seen = []
+    monkeypatch.setattr(
+        main, "classify_and_analyze",
+        lambda t, attempts=3: seen.append(attempts) or {"type": "食事", "calories": 1})
+    main.monitor.classify_fn("ラーメン")
+    assert seen == [1]
+
+
 def test_empty_events_record_nothing(env):
     main, db, install = env
     install(make_http())
