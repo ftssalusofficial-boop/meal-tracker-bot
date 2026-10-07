@@ -68,3 +68,39 @@ class Monitor:
         ok = sum(1 for i in items if i.get("outcome") == "ok")
         last = max((i.get("ts") for i in items), default=None)
         return {"date": date_str, "received": received, "ok": ok, "failed": received - ok, "last_received_at": last}
+
+    def _push(self, user_id, text):
+        try:
+            resp = self.http.post(
+                f"{LINE_API}/v2/bot/message/push",
+                headers=self._headers(),
+                json={"to": user_id, "messages": [{"type": "text", "text": text[:2000]}]},
+                timeout=10,
+            )
+            return resp.status_code == 200
+        except Exception:
+            traceback.print_exc()
+            return False
+
+    def alert_staff(self, key, text):
+        if not self.alert_user_id:
+            return False
+        now = self._now()
+        last = self._alert_last.get(key)
+        try:
+            doc = self.db.collection("system").document("alerts").get()
+            stored = _parse((doc.to_dict() or {}).get(key)) if doc.exists else None
+            if stored and (last is None or stored > last):
+                last = stored
+        except Exception:
+            traceback.print_exc()
+        if last and (now - last) < timedelta(minutes=ALERT_INTERVAL_MIN):
+            return False
+        if not self._push(self.alert_user_id, text):
+            return False
+        self._alert_last[key] = now
+        try:
+            self.db.collection("system").document("alerts").update({key: now.isoformat()})
+        except Exception:
+            traceback.print_exc()
+        return True
