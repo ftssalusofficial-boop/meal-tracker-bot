@@ -38,8 +38,11 @@ BONUS_NUTRIENT_FIELDS = [
     ("vitamin_a", "ビタミンA", "μg"),
     ("vitamin_c", "ビタミンC", "mg"),
     ("vitamin_d", "ビタミンD", "μg"),
+    ("vitamin_e", "ビタミンE", "mg"),
+    ("vitamin_b1", "ビタミンB1", "mg"),
     ("calcium", "カルシウム", "mg"),
     ("iron", "鉄", "mg"),
+    ("zinc", "亜鉛", "mg"),
 ]
 
 HELP_TEXT = """📖 SALUS MEAL 使い方
@@ -47,7 +50,7 @@ HELP_TEXT = """📖 SALUS MEAL 使い方
 🍽 食事を記録
 料理名を送るだけ！
 例：ラーメン、サラダチキン
-カロリー・タンパク質・脂質・炭水化物・糖質・ビタミンA/C/D・カルシウム・鉄まで自動で分析します！
+カロリー・タンパク質・脂質・炭水化物・糖質・ビタミンA/C/D/E/B1・カルシウム・鉄・亜鉛まで自動で分析します！
 
 📸 写真でもOK
 ※正確性には欠けるかも、、、
@@ -207,12 +210,12 @@ def classify_and_analyze(text, attempts=3):
 - 体重確認、体重推移、体重みたい → 体重確認
 - それ以外 → その他
 
-判定結果が「食事」の場合は、料理名とカロリー、タンパク質、脂質、炭水化物、糖質、ビタミンA(μg)、ビタミンC(mg)、ビタミンD(μg)、カルシウム(mg)、鉄(mg)も含めてください。含まれていない栄養素は0にしてください。
+判定結果が「食事」の場合は、料理名とカロリー、タンパク質、脂質、炭水化物、糖質、ビタミンA(μg)、ビタミンC(mg)、ビタミンD(μg)、ビタミンE(mg)、ビタミンB1(mg)、カルシウム(mg)、鉄(mg)、亜鉛(mg)も含めてください。含まれていない栄養素は0にしてください。
 判定結果が「運動」の場合は、運動名と消費カロリーも含めてください（歩数の場合は距離と消費カロリーを計算）。
 
 数値は必ず推定して数値で返してください。null・空欄・文字列は使わないでください。
 必ずJSON形式のみで回答してください。他の文章は不要です。
-「食事」の例：{{"type":"食事","dish":"料理名","calories":500,"protein":20,"fat":15,"carbs":60,"sugar":10,"vitamin_a":50,"vitamin_c":5,"vitamin_d":0,"calcium":30,"iron":1.2}}
+「食事」の例：{{"type":"食事","dish":"料理名","calories":500,"protein":20,"fat":15,"carbs":60,"sugar":10,"vitamin_a":50,"vitamin_c":5,"vitamin_d":0,"vitamin_e":2,"vitamin_b1":0.3,"calcium":30,"iron":1.2,"zinc":1.5}}
 「運動」の例：{{"type":"運動","exercise":"ウォーキング30分","burned_calories":120}}
 それ以外の例：{{"type":"合計確認"}}
 
@@ -251,10 +254,12 @@ def _require_numbers(data, keys):
 
 def analyze_food_image(image_bytes):
     prompt = ("この食事の写真を見て、料理名とカロリー、タンパク質、脂質、炭水化物、糖質、"
-              "ビタミンA(μg)、ビタミンC(mg)、ビタミンD(μg)、カルシウム(mg)、鉄(mg)をJSON形式のみで返してください。"
+              "ビタミンA(μg)、ビタミンC(mg)、ビタミンD(μg)、ビタミンE(mg)、ビタミンB1(mg)、"
+              "カルシウム(mg)、鉄(mg)、亜鉛(mg)をJSON形式のみで返してください。"
               "含まれていない栄養素は0にしてください。他の文章は不要です。"
               "例：{\"dish\":\"料理名\",\"calories\":500,\"protein\":20,\"fat\":15,\"carbs\":60,"
-              "\"sugar\":10,\"vitamin_a\":50,\"vitamin_c\":5,\"vitamin_d\":0,\"calcium\":30,\"iron\":1.2}")
+              "\"sugar\":10,\"vitamin_a\":50,\"vitamin_c\":5,\"vitamin_d\":0,\"vitamin_e\":2,"
+              "\"vitamin_b1\":0.3,\"calcium\":30,\"iron\":1.2,\"zinc\":1.5}")
     return gemini_generate(prompt, image_bytes)
 
 def extract_bonus_nutrients(source):

@@ -258,7 +258,8 @@ def test_daily_totals_tolerate_stored_nulls(env):
     total = main.get_daily_total("Uuser1")
     assert total == {
         "calories": 1500, "protein": 10, "fat": 5, "carbs": 40,
-        "sugar": 8, "vitamin_a": 0, "vitamin_c": 5, "vitamin_d": 0, "calcium": 0, "iron": 0,
+        "sugar": 8, "vitamin_a": 0, "vitamin_c": 5, "vitamin_d": 0, "vitamin_e": 0, "vitamin_b1": 0,
+        "calcium": 0, "iron": 0, "zinc": 0,
     }
 
 
@@ -267,12 +268,14 @@ def test_meal_message_saves_and_replies_with_bonus_nutrients(env, monkeypatch):
     install(make_http())
     monkeypatch.setattr(main, "classify_and_analyze", lambda t, attempts=3: {
         "type": "食事", "dish": "ラーメン", "calories": 500, "protein": 20, "fat": 15, "carbs": 60,
-        "sugar": 3, "vitamin_a": 10, "vitamin_c": 2, "vitamin_d": 0, "calcium": 50, "iron": 1.5,
+        "sugar": 3, "vitamin_a": 10, "vitamin_c": 2, "vitamin_d": 0, "vitamin_e": 1.5, "vitamin_b1": 0.2,
+        "calcium": 50, "iron": 1.5, "zinc": 0.8,
     })
     assert post(main, [text_event("ラーメン")]).status_code == 200
     today = datetime.now(main.JST).strftime("%Y-%m-%d")
     saved = docs_under(db, "meals", "Uuser1", today)[0]
     assert saved["sugar"] == 3 and saved["calcium"] == 50 and saved["iron"] == 1.5
+    assert saved["vitamin_e"] == 1.5 and saved["vitamin_b1"] == 0.2 and saved["zinc"] == 0.8
 
 
 def test_meal_missing_bonus_nutrients_defaults_to_zero(env, monkeypatch):
@@ -285,6 +288,7 @@ def test_meal_missing_bonus_nutrients_defaults_to_zero(env, monkeypatch):
     today = datetime.now(main.JST).strftime("%Y-%m-%d")
     saved = docs_under(db, "meals", "Uuser1", today)[0]
     assert saved["sugar"] == 0 and saved["vitamin_a"] == 0 and saved["iron"] == 0
+    assert saved["vitamin_e"] == 0 and saved["vitamin_b1"] == 0 and saved["zinc"] == 0
 
 
 def test_null_analysis_from_ai_gives_retry_message_not_a_saved_record(env, monkeypatch):
