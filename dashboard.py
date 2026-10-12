@@ -227,7 +227,7 @@ h1 { color: #333; }
   <div class="record-item">⚖️ 体重：{{ data.weight }} kg</div>
   {% endif %}
   {% for meal in data.meals %}
-  <div class="record-item">🍽 {{ meal.dish }}（{{ meal.calories }} kcal / タンパク質{{ meal.protein }}g / 脂質{{ meal.fat }}g / 炭水化物{{ meal.carbs }}g）</div>
+  <div class="record-item">🍽 {{ meal.dish }}（{{ meal.calories }} kcal / タンパク質{{ meal.protein }}g / 脂質{{ meal.fat }}g / 炭水化物{{ meal.carbs }}g / 糖質{{ meal.sugar }}g / ビタミンA{{ meal.vitamin_a }}μg / ビタミンC{{ meal.vitamin_c }}mg / ビタミンD{{ meal.vitamin_d }}μg / カルシウム{{ meal.calcium }}mg / 鉄{{ meal.iron }}mg）</div>
   {% endfor %}
   {% for ex in data.exercises %}
   <div class="record-item">🏃 {{ ex.exercise }}（消費{{ ex.burned_calories }} kcal）</div>

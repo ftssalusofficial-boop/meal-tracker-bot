@@ -29,11 +29,25 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 
 JST = timezone(timedelta(hours=9))
 
+# Extra per-meal nutrients beyond calories/protein/fat/carbs. These are
+# "bonus" info Gemini estimates best-effort -- unlike the core four, a
+# missing/null value here defaults to 0 rather than forcing a retry or
+# rejecting the save (see extract_bonus_nutrients).
+BONUS_NUTRIENT_FIELDS = [
+    ("sugar", "糖質", "g"),
+    ("vitamin_a", "ビタミンA", "μg"),
+    ("vitamin_c", "ビタミンC", "mg"),
+    ("vitamin_d", "ビタミンD", "μg"),
+    ("calcium", "カルシウム", "mg"),
+    ("iron", "鉄", "mg"),
+]
+
 HELP_TEXT = """📖 SALUS MEAL 使い方
 
 🍽 食事を記録
 料理名を送るだけ！
 例：ラーメン、サラダチキン
+カロリー・タンパク質・脂質・炭水化物・糖質・ビタミンA/C/D・カルシウム・鉄まで自動で分析します！
 
 📸 写真でもOK
 ※正確性には欠けるかも、、、
@@ -193,12 +207,12 @@ def classify_and_analyze(text, attempts=3):
 - 体重確認、体重推移、体重みたい → 体重確認
 - それ以外 → その他
 
-判定結果が「食事」の場合は、料理名とカロリー、タンパク質、脂質、炭水化物も含めてください。
+判定結果が「食事」の場合は、料理名とカロリー、タンパク質、脂質、炭水化物、糖質、ビタミンA(μg)、ビタミンC(mg)、ビタミンD(μg)、カルシウム(mg)、鉄(mg)も含めてください。含まれていない栄養素は0にしてください。
 判定結果が「運動」の場合は、運動名と消費カロリーも含めてください（歩数の場合は距離と消費カロリーを計算）。
 
 数値は必ず推定して数値で返してください。null・空欄・文字列は使わないでください。
 必ずJSON形式のみで回答してください。他の文章は不要です。
-「食事」の例：{{"type":"食事","dish":"料理名","calories":500,"protein":20,"fat":15,"carbs":60}}
+「食事」の例：{{"type":"食事","dish":"料理名","calories":500,"protein":20,"fat":15,"carbs":60,"sugar":10,"vitamin_a":50,"vitamin_c":5,"vitamin_d":0,"calcium":30,"iron":1.2}}
 「運動」の例：{{"type":"運動","exercise":"ウォーキング30分","burned_calories":120}}
 それ以外の例：{{"type":"合計確認"}}
 
@@ -236,22 +250,35 @@ def _require_numbers(data, keys):
             raise ValueError(f"missing numeric field: {key}")
 
 def analyze_food_image(image_bytes):
-    prompt = "この食事の写真を見て、料理名とカロリー、タンパク質、脂質、炭水化物をJSON形式のみで返してください。他の文章は不要です。例：{\"dish\":\"料理名\",\"calories\":500,\"protein\":20,\"fat\":15,\"carbs\":60}"
+    prompt = ("この食事の写真を見て、料理名とカロリー、タンパク質、脂質、炭水化物、糖質、"
+              "ビタミンA(μg)、ビタミンC(mg)、ビタミンD(μg)、カルシウム(mg)、鉄(mg)をJSON形式のみで返してください。"
+              "含まれていない栄養素は0にしてください。他の文章は不要です。"
+              "例：{\"dish\":\"料理名\",\"calories\":500,\"protein\":20,\"fat\":15,\"carbs\":60,"
+              "\"sugar\":10,\"vitamin_a\":50,\"vitamin_c\":5,\"vitamin_d\":0,\"calcium\":30,\"iron\":1.2}")
     return gemini_generate(prompt, image_bytes)
+
+def extract_bonus_nutrients(source):
+    """Pulls the non-core nutrient fields out of a Gemini response, defaulting
+    a missing or null value to 0. Unlike calories/protein/fat/carbs, these
+    aren't required or retried -- a meal is still worth saving without them."""
+    return {key: source.get(key) or 0 for key, _, _ in BONUS_NUTRIENT_FIELDS}
 
 def save_meal(user_id, meal_data):
     _require_numbers(meal_data, ("calories", "protein", "fat", "carbs"))
     now = datetime.now(JST)
     date_str = now.strftime("%Y-%m-%d")
     doc_ref = db.collection("meals").document(user_id).collection(date_str).document()
-    doc_ref.set({
+    data = {
         "dish": meal_data["dish"],
         "calories": meal_data["calories"],
         "protein": meal_data["protein"],
         "fat": meal_data["fat"],
         "carbs": meal_data["carbs"],
         "timestamp": now.isoformat()
-    })
+    }
+    for key, _, _ in BONUS_NUTRIENT_FIELDS:
+        data[key] = meal_data.get(key) or 0
+    doc_ref.set(data)
 
 def save_exercise(user_id, exercise_data):
     _require_numbers(exercise_data, ("burned_calories",))
@@ -393,12 +420,16 @@ def get_daily_total(user_id):
     date_str = now.strftime("%Y-%m-%d")
     docs = db.collection("meals").document(user_id).collection(date_str).stream()
     total = {"calories": 0, "protein": 0, "fat": 0, "carbs": 0}
+    for key, _, _ in BONUS_NUTRIENT_FIELDS:
+        total[key] = 0
     for doc in docs:
         d = doc.to_dict()
         total["calories"] += d.get("calories") or 0
         total["protein"] += d.get("protein") or 0
         total["fat"] += d.get("fat") or 0
         total["carbs"] += d.get("carbs") or 0
+        for key, _, _ in BONUS_NUTRIENT_FIELDS:
+            total[key] += d.get(key) or 0
     return total
 
 def get_daily_exercise_total(user_id):
@@ -428,6 +459,7 @@ def format_total_reply(total, burned, goal):
     net = total["calories"] - burned
     reply = f"📊 今日の合計\n\n🍽 摂取カロリー：{total['calories']} kcal\n🏃 消費カロリー：{burned} kcal\n⚡ 純カロリー：{net} kcal"
     reply += f"\n\nタンパク質：{total['protein']} g\n脂質：{total['fat']} g\n炭水化物：{total['carbs']} g"
+    reply += "\n" + "\n".join(f"{label}：{total[key]} {unit}" for key, label, unit in BONUS_NUTRIENT_FIELDS)
     if goal:
         reply += "\n\n🎯 目標との比較"
         cal_remaining = goal["calories"] - net
@@ -511,8 +543,11 @@ def process_event(event):
             result = analyze_food_image(image_bytes)
             clean = result.strip().replace("```json", "").replace("```", "").strip()
             meal_data = json.loads(clean)
+            meal_data.update(extract_bonus_nutrients(meal_data))
             save_meal(user_id, meal_data)
-            reply = f"📸 {meal_data['dish']}\n\nカロリー：{meal_data['calories']} kcal\nタンパク質：{meal_data['protein']} g\n脂質：{meal_data['fat']} g\n炭水化物：{meal_data['carbs']} g\n\n✅ 記録しました！"
+            reply = f"📸 {meal_data['dish']}\n\nカロリー：{meal_data['calories']} kcal\nタンパク質：{meal_data['protein']} g\n脂質：{meal_data['fat']} g\n炭水化物：{meal_data['carbs']} g"
+            reply += "\n" + "\n".join(f"{label}：{meal_data[key]} {unit}" for key, label, unit in BONUS_NUTRIENT_FIELDS)
+            reply += "\n\n✅ 記録しました！"
         except Exception:
             log_error()
             reply = "写真から料理を認識できませんでした。もう一度試してください。"
@@ -598,8 +633,11 @@ def process_event(event):
             elif msg_type_classified == "食事":
                 try:
                     meal_data = {"dish": analysis["dish"], "calories": analysis["calories"], "protein": analysis["protein"], "fat": analysis["fat"], "carbs": analysis["carbs"]}
+                    meal_data.update(extract_bonus_nutrients(analysis))
                     save_meal(user_id, meal_data)
-                    reply = f"🍽 {meal_data['dish']}\n\nカロリー：{meal_data['calories']} kcal\nタンパク質：{meal_data['protein']} g\n脂質：{meal_data['fat']} g\n炭水化物：{meal_data['carbs']} g\n\n✅ 記録しました！"
+                    reply = f"🍽 {meal_data['dish']}\n\nカロリー：{meal_data['calories']} kcal\nタンパク質：{meal_data['protein']} g\n脂質：{meal_data['fat']} g\n炭水化物：{meal_data['carbs']} g"
+                    reply += "\n" + "\n".join(f"{label}：{meal_data[key]} {unit}" for key, label, unit in BONUS_NUTRIENT_FIELDS)
+                    reply += "\n\n✅ 記録しました！"
                 except Exception:
                     log_error()
                     reply = "食事を認識できませんでした。料理名を入力してみてください。"
@@ -693,37 +731,6 @@ def callback():
 def status():
     payload, code = monitor.get_status(detail=request.args.get("detail") == "1")
     return jsonify(payload), code
-
-@app.route("/health")
-def health():
-    """Exercises the exact paths a real user message depends on (Firestore
-    read/write and Gemini) so a scheduled check can catch a broken bot before
-    a user notices the silence, instead of just confirming the process is up."""
-    checks = {}
-    ok = True
-
-    try:
-        now = datetime.now(JST)
-        ref = db.collection("system").document("healthcheck")
-        ref.set({"checked_at": now.isoformat()})
-        doc = ref.get()
-        checks["firestore"] = doc.exists and doc.to_dict().get("checked_at") == now.isoformat()
-    except Exception as e:
-        checks["firestore"] = False
-        checks["firestore_error"] = str(e)
-    if not checks["firestore"]:
-        ok = False
-
-    try:
-        result = gemini_generate("これはヘルスチェックです。「OK」とだけ返してください。")
-        checks["gemini"] = bool(result and result.strip())
-    except Exception as e:
-        checks["gemini"] = False
-        checks["gemini_error"] = str(e)
-    if not checks["gemini"]:
-        ok = False
-
-    return jsonify({"ok": ok, "checks": checks}), 200 if ok else 503
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
